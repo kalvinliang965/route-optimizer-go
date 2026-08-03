@@ -147,6 +147,7 @@ type OSRMTableResponse struct {
 	Durations [][]float64 `json:"durations"`
 }
 
+
 func fetchDurationMatrix(stops []Stop) ([][]float64, error) {
 	// 1. Build the coordinate string format: "lon,lat;lon,lat;..."
 	var coordStrs []string
