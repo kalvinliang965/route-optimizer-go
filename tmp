@@ -1,0 +1,37 @@
+// var results []AddressStruct;
+if err := json.Unmarshal(body, &results); err != nil {
+  return nil, fmt.Errorf("failed to parse JSON: %v", err);
+}
+
+if len(results) == 0 {
+  return nil, fmt.Errorf("no geocode address results found in response for %s", address);
+}
+
+// TODO: might want user to pick the result they want
+fmt.Printf("Available results for %s: ", address);
+for _, addr := range results {
+  fmt.Printf("	`%s`\n", addr.Name);
+}
+
+result := pick_result(results);
+
+if len(result.Name)  == 0 {
+  return nil, fmt.Errorf("result chosen for `%s` is empty", address);
+}
+
+lat, err := strconv.ParseFloat(result.Lat, 64);
+if err != nil {
+  return nil, fmt.Errorf("Invalid latitude format: `%s`: %v", result.Lat, err);
+}
+
+if err != nil {
+  return nil, fmt.Errorf("Invalid longitude format: `%s`: %v", result.Lon, err);
+}
+
+lon, err := strconv.ParseFloat(result.Lon, 64);
+
+
+return &Point {
+  Lat: lat,
+  Lon: lon,
+}, nil;

@@ -1,0 +1,18 @@
+[700 E 16th St, New York, NY 10009 Times Square, New York, NY Empire State Building, New York, NY Washington Square Park, New York, NY Battery Park, New York, NY Grand Central Terminal, New York, NY]
+point[0]: lat: 40.729661, lng: -73.974688 
+point[1]: lat: 40.757010, lng: -73.985972 
+point[2]: lat: 40.748442, lng: -73.985659 
+point[3]: lat: 40.730896, lng: -73.997600 
+point[4]: lat: 40.702786, lng: -74.015773 
+point[5]: lat: 40.752694, lng: -73.977253 
+
+--- Optimized Itinerary ---
+1. 700 E 16th St, New York, NY 10009 (lat: 40.729661, lng: -73.974688)
+2. Grand Central Terminal, New York, NY (lat: 40.752694, lng: -73.977253)
+3. Times Square, New York, NY (lat: 40.757010, lng: -73.985972)
+4. Empire State Building, New York, NY (lat: 40.748442, lng: -73.985659)
+5. Washington Square Park, New York, NY (lat: 40.730896, lng: -73.997600)
+6. Battery Park, New York, NY (lat: 40.702786, lng: -74.015773)
+
+Total duration: 1694.5 seconds (28.2 min)
+Total distance: 13733.9 meters (13.73 km)
