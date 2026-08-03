@@ -41,12 +41,16 @@ func permute(arr []int, start int, result *[][]int) {
     arr[start], arr[i] = arr[i], arr[start]
   }
 }
+type RouteResult struct {
+  Path     []int
+  Duration float64
+}
 
 // we assume that stops < 15
-func solve(stops []Stop, matrix [][]float64, findIdx func(string) int, k int) ([][]int, error) {
+func solve(stops []Stop, matrix [][]float64, findIdx func(string) int, k int) ([]RouteResult, error) {
   n := len(stops)
   if n <= 1 {
-    return [][]int{{0}}, nil
+    return []RouteResult{{Path: []int{0}, Duration: 0.0}}, nil
   }
 
   // indices of stops (skip index 0 since it's the fixed start/depot)
@@ -71,7 +75,6 @@ func solve(stops []Stop, matrix [][]float64, findIdx func(string) int, k int) ([
       fromIdx := fullRoute[j]
       toIdx := fullRoute[j+1]
 
-      // Since matrix is a 2D slice [][]float64, we can index directly using int indices
       if fromIdx < len(matrix) && toIdx < len(matrix[fromIdx]) {
         duration += matrix[fromIdx][toIdx]
       } else {
@@ -84,23 +87,23 @@ func solve(stops []Stop, matrix [][]float64, findIdx func(string) int, k int) ([
       Duration: duration,
     })
 
-    // For a min-heap, popping when Len > k removes the longest durations,
-    // leaving us with the top k shortest routes.
     if h.Len() > k {
       heap.Pop(h)
     }
   }
 
-  // Extract results (pop from min-heap, which gives them in ascending order of duration)
-  var res [][]int
-  // Temporary slice to reverse or collect elements since heap pop gives shortest first
+  // Extract results from min-heap in ascending order of duration
   tempRes := make([]RouteItem, h.Len())
   for i := len(tempRes) - 1; i >= 0; i-- {
     tempRes[i] = heap.Pop(h).(RouteItem)
   }
 
+  var res []RouteResult
   for _, item := range tempRes {
-    res = append(res, item.Path)
+    res = append(res, RouteResult{
+      Path:     item.Path,
+      Duration: item.Duration,
+    })
   }
 
   return res, nil
