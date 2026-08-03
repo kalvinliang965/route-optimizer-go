@@ -30,3 +30,8 @@ type Stop struct {
   Lon  float64
   Lat  float64
 }
+
+type OSRMTableResponse struct {
+  Code      string      `json:"code"`
+  Durations [][]float64 `json:"durations"`
+}

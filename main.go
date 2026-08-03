@@ -4,28 +4,21 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 )
 
-func SetupRouteData(addresses []string) ([]Stop, [][]float64, func(string) int, error) {
-	stops, err := build_stops_from_addresses(addresses)
+func SetupRouteData(addresses []string, geocodeCache GeocodeCache, matrixCache MatrixCache) ([]Stop, [][]float64, func(string) int, error) {
+	stops, err := getStops(addresses, geocodeCache)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	durations, err := fetchDurationMatrix(stops)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	findIdx := func(query string) int {
-		for i, stop := range stops {
-			if strings.EqualFold(stop.Name, query) || strings.Contains(strings.ToLower(stop.Name), strings.ToLower(query)) {
-				return i
-			}
-		}
-		return -1
-	}
+	durations, findIdx, err := buildDistanceMatrix(stops, matrixCache)
 	return stops, durations, findIdx, nil
 }
+
+const (
+		geocode_cache_file = "data/geocode_cache.json"
+		matrix_cache_file = "data/matrix_cache.json"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -36,12 +29,22 @@ func main() {
 	file_path := os.Args[1]
 	fmt.Printf("\nReading stops from: %s\n", file_path)
 
-	addresses, err := read_addresses_from_file(file_path)
+	addresses, err := readAddressesFromFile(file_path)
 	if err != nil {
 		log.Fatalf("Failed to read addresses: %v\n", err)
 	}
 
-	stops, durations, findIdx, err := SetupRouteData(addresses)
+	geocodeCache, err := loadGeocode(geocode_cache_file);
+	if err != nil {
+		log.Fatalf("Failed to initialize geocode cache: %v", err)	
+	}
+	
+	matrixCache, err := loadMatrix(matrix_cache_file);
+	if err != nil {
+		log.Fatalf("Failed to initialize matrix cache: %v", err)
+	}
+	
+	stops, durations, findIdx, err := SetupRouteData(addresses, geocodeCache, matrixCache)
 	if err != nil {
 		log.Fatalf("Error setting up route data: %v\n", err)
 	}
@@ -53,5 +56,17 @@ func main() {
 			fmt.Printf("Time from %s to %s: %.1f seconds\n", stops[idx1].Name, stops[idx2].Name, durations[idx1][idx2])
 		}
 	}
+
+
+	err = saveGeocode(geocode_cache_file, geocodeCache)
+	if err != nil {
+		log.Fatalf("Failed to save geocode cache: %v", err);
+	}
+	
+	err = saveMatrix(matrix_cache_file, matrixCache)
+	if err != nil {
+		log.Fatalf("Failed to save matrix cache: %v", err);
+	}
+	
 	fmt.Printf("Finish\n")
 }

@@ -11,11 +11,11 @@ import (
   "time"
 )
 
-func pick_result(results []AddressStruct) AddressStruct {
+func pickResult(results []AddressStruct) AddressStruct {
   return results[0] // by default pick the first result
 }
 
-func geocodeAddress(address string) (*Stop, error) {
+var FetchGeocodeAddress = func(address string) (*Stop, error) {
   endpoint := fmt.Sprintf("https://nominatim.openstreetmap.org/search?q=%s&format=json&limit=1", url.QueryEscape(address))
   req, err := http.NewRequest("GET", endpoint, nil)
   if err != nil {
@@ -50,7 +50,7 @@ func geocodeAddress(address string) (*Stop, error) {
     fmt.Printf("		`%s`\n", addr.Name)
   }
 
-  result := pick_result(results)
+  result := pickResult(results)
 
   if len(result.Name) == 0 {
     return nil, fmt.Errorf("result chosen for `%s` is empty", address)
@@ -75,15 +75,13 @@ func geocodeAddress(address string) (*Stop, error) {
 
 
 
-func fetchDurationMatrix(stops []Stop) ([][]float64, error) {
-  // 1. Build the coordinate string format: "lon,lat;lon,lat;..."
+var FetchDurationMatrix = func(stops []Stop) ([][]float64, error) {
   var coordStrs []string
   for _, s := range stops {
     coordStrs = append(coordStrs, fmt.Sprintf("%f,%f", s.Lon, s.Lat))
   }
   coordinatesParam := strings.Join(coordStrs, ";")
 
-  // 2. Construct the OSRM Table API endpoint URL
   apiURL := fmt.Sprintf("http://router.project-osrm.org/table/v1/driving/%s?annotations=duration", coordinatesParam)
 
   req, err := http.NewRequest("GET", apiURL, nil)

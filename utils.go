@@ -7,7 +7,7 @@ import (
   "strings"
 )
 
-func read_addresses_from_file(path string) ([]string, error) {
+func readAddressesFromFile(path string) ([]string, error) {
   file, err := os.Open(path)
   if err != nil {
     err_msg := fmt.Sprintf("Failed to open files %s: %v", path, err)
@@ -30,20 +30,85 @@ func read_addresses_from_file(path string) ([]string, error) {
   return addresses, nil
 }
 
-func build_stops_from_addresses(addresses []string) ([]Stop, error) {
-  var stops []Stop
-  for _, addr := range addresses {
-    s, err := geocodeAddress(addr)
+
+func getStop(addr string, cache GeocodeCache) (*Stop, error) {
+   if cachedStop, exists := cache[addr]; exists {
+     fmt.Printf("Cache hit: %s\n", addr);
+     return &cachedStop, nil;
+   } 
+    fmt.Printf("[Cache Miss] Fetching from API: %s\n", addr)
+    stopPtr, err := FetchGeocodeAddress(addr)
+    if err != nil {
+        return nil, err
+    }
+    cache[addr] = *stopPtr
+    return stopPtr, nil
+}
+
+func getStops(addresses []string, cache GeocodeCache) ([]Stop, error) {
+  n := len(addresses)
+  stops := make([]Stop, n);
+  
+  for i, addr := range addresses {
+    s, err := getStop(addr, cache)
     if err != nil {
       return nil, fmt.Errorf("Failed to build stops: %v", err)
     }
-    stops = append(stops, *s)
+    stops[i] = *s
   }
   return stops, nil
 }
 
-type OSRMTableResponse struct {
-  Code      string      `json:"code"`
-  Durations [][]float64 `json:"durations"`
+func getDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
+
+  src := fmt.Sprintf("%.6f, %.6f", from.Lat, from.Lon);
+  dest := fmt.Sprintf("%.6f, %.6f", to.Lat, to.Lon);
+
+  if srcMap, exists := cache[src]; exists {
+    if dist, exists := srcMap[dest]; exists {
+      fmt.Printf("[cache hit]");
+      return dist, nil;
+    }
+  }
+  durations, err := FetchDurationMatrix([]Stop{from, to})
+  if err != nil {
+    return -1, err
+  }
+  if _, exists := cache[src]; !exists {
+    cache[src] = make(map[string]float64)
+  }
+  cache[src][dest] = durations[0][1]
+  return cache[src][dest], err
 }
 
+func buildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(string) int, error) {
+  n := len(stops)
+  distMatrix := make([][]float64, n)
+  for i := range stops {
+    distMatrix[i] = make([]float64, n)
+  }
+
+  for i := 0; i < n; i++ {
+    for j := 0; j < n; j++ {
+      if i == j {
+        continue
+      }
+      dist, err := getDistance(stops[i], stops[j], cache);
+      if err != nil {
+        return nil, nil, err
+      }
+      distMatrix[i][j] = dist;
+    }
+  }
+
+  findIdx := func(query string) int {
+    for i, stop := range stops {
+      if strings.EqualFold(stop.Name, query) || strings.Contains(strings.ToLower(stop.Name), strings.ToLower(query)) {
+        return i
+      }
+    }
+    return -1
+  }
+  
+  return distMatrix,findIdx, nil
+}
