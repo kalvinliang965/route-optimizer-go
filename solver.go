@@ -12,8 +12,11 @@ type RouteItem struct {
 
 type RouteHeap []RouteItem
 
-func (h RouteHeap) Len() int           { return len(h) }
-func (h RouteHeap) Less(i, j int) bool { return h[i].Duration < h[j].Duration }
+func (h RouteHeap) Len() int { return len(h) }
+
+// Max-heap by duration: Pop removes the longest route so a size-K heap
+// retains the K shortest candidates.
+func (h RouteHeap) Less(i, j int) bool { return h[i].Duration > h[j].Duration }
 func (h RouteHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *RouteHeap) Push(x interface{}) {
@@ -92,7 +95,7 @@ func solve(stops []Stop, matrix [][]float64, findIdx func(string) int, k int) ([
     }
   }
 
-  // Extract results from min-heap in ascending order of duration
+  // Max-heap pops longest first; fill from the end for ascending order.
   tempRes := make([]RouteItem, h.Len())
   for i := len(tempRes) - 1; i >= 0; i-- {
     tempRes[i] = heap.Pop(h).(RouteItem)
