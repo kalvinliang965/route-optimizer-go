@@ -1,8 +1,10 @@
 package main
 
 import (
+  "fmt"
   "reflect"
   "sort"
+  "strings"
   "testing"
 )
 
@@ -57,19 +59,9 @@ func TestSolveTopK(t *testing.T) {
     {10.0, 4.0, 2.0, 0.0}, // From SiteC to others
   }
 
-  // Mock findIdx function (not strictly used since matrix is a 2D slice, but matches signature)
-  findIdx := func(name string) int {
-    for i, s := range stops {
-      if s.Name == name {
-        return i
-      }
-    }
-    return -1
-  }
-
   // Request top 2 routes (k = 2)
   k := 2
-  routes, err := solve(stops, matrix, findIdx, k)
+  routes, err := solve(stops, matrix, k)
 
   if err != nil {
     t.Fatalf("solve failed unexpectedly: %v", err)
@@ -97,6 +89,30 @@ func TestSolveTopK(t *testing.T) {
   }
 }
 
+// TestSolve_RejectsTooManyStops ensures we fail fast instead of enumerating (n-1)!.
+func TestSolve_RejectsTooManyStops(t *testing.T) {
+  old := maxStops
+  maxStops = 3
+  defer func() { maxStops = old }()
+
+  stops := make([]Stop, 4) // exceeds maxStops
+  for i := range stops {
+    stops[i] = Stop{Name: fmt.Sprintf("S%d", i)}
+  }
+  matrix := make([][]float64, len(stops))
+  for i := range matrix {
+    matrix[i] = make([]float64, len(stops))
+  }
+
+  _, err := solve(stops, matrix, 2)
+  if err == nil {
+    t.Fatal("expected error when stop count exceeds maxStops, got nil")
+  }
+  if !strings.Contains(err.Error(), "max") && !strings.Contains(err.Error(), "too many") {
+    t.Errorf("error should mention the stop limit, got: %v", err)
+  }
+}
+
 // TestSolveTopKKeepsShortestRoutes catches the inverted bounded-heap bug:
 // a min-heap that pops when Len() > k discards the shortest routes and keeps the longest.
 func TestSolveTopKKeepsShortestRoutes(t *testing.T) {
@@ -117,7 +133,7 @@ func TestSolveTopKKeepsShortestRoutes(t *testing.T) {
   }
 
   const k = 2
-  routes, err := solve(stops, matrix, nil, k)
+  routes, err := solve(stops, matrix, k)
   if err != nil {
     t.Fatalf("solve failed: %v", err)
   }

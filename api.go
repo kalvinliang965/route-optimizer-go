@@ -15,6 +15,13 @@ func pickResult(results []AddressStruct) AddressStruct {
   return results[0] // by default pick the first result
 }
 
+// Overridden from YAML via Config.applyRuntime.
+var (
+  geocodeTimeout = 5 * time.Second
+  osrmTimeout    = 10 * time.Second
+  httpUserAgent  = "GoRouteOptimizerApp/1.0 (student project)"
+)
+
 var FetchGeocodeAddress = func(address string) (*Stop, error) {
   endpoint := fmt.Sprintf("https://nominatim.openstreetmap.org/search?q=%s&format=json&limit=1", url.QueryEscape(address))
   req, err := http.NewRequest("GET", endpoint, nil)
@@ -22,9 +29,9 @@ var FetchGeocodeAddress = func(address string) (*Stop, error) {
     return nil, err
   }
 
-  req.Header.Set("User-Agent", "GoRouteOptimizerApp/1.0 (student project)")
+  req.Header.Set("User-Agent", httpUserAgent)
 
-  client := &http.Client{Timeout: 5 * time.Second}
+  client := &http.Client{Timeout: geocodeTimeout}
   resp, err := client.Do(req)
   if err != nil {
     return nil, err
@@ -88,9 +95,9 @@ var FetchDurationMatrix = func(stops []Stop) ([][]float64, error) {
   if err != nil {
     return nil, err
   }
-  req.Header.Set("User-Agent", "GoRouteOptimizerApp/1.0 (student project)")
+  req.Header.Set("User-Agent", httpUserAgent)
 
-  client := &http.Client{Timeout: 10 * time.Second}
+  client := &http.Client{Timeout: osrmTimeout}
   resp, err := client.Do(req)
   if err != nil {
     return nil, err

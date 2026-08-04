@@ -24,7 +24,7 @@ func TestSetupRouteData_PropagatesMatrixError(t *testing.T) {
 	}
 	matrixCache := make(MatrixCache)
 
-	_, _, _, err := SetupRouteData(addresses, geocodeCache, matrixCache)
+	_, _, err := SetupRouteData(addresses, geocodeCache, matrixCache)
 	if err == nil {
 		t.Fatal("expected matrix build error to be returned, got nil")
 	}

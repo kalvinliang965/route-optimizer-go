@@ -1,78 +1,85 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
-	"os"
 )
 
-func SetupRouteData(addresses []string, geocodeCache GeocodeCache, matrixCache MatrixCache) ([]Stop, [][]float64, func(string) int, error) {
+func SetupRouteData(addresses []string, geocodeCache GeocodeCache, matrixCache MatrixCache) ([]Stop, [][]float64, error) {
 	stops, err := getStops(addresses, geocodeCache)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	durations, findIdx, err := buildDistanceMatrix(stops, matrixCache)
-	return stops, durations, findIdx, err
+	durations, _, err := buildDistanceMatrix(stops, matrixCache)
+	return stops, durations, err
 }
 
-const (
-		geocode_cache_file = "data/geocode_cache.json"
-		matrix_cache_file = "data/matrix_cache.json"
-)
-
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: go run main.go <string-address-input-file>\n")
-		return
-	}
+	configPath := flag.String("config", "config.yaml", "path to YAML config")
+	flag.Parse()
 
-	file_path := os.Args[1]
-	fmt.Printf("\nReading stops from: %s\n", file_path)
-
-	addresses, err := readAddressesFromFile(file_path)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to read addresses: %v\n", err)
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.applyRuntime()
+
+	var cliAddressesFile string
+	if flag.NArg() >= 1 {
+		cliAddressesFile = flag.Arg(0)
 	}
 
-	geocodeCache, err := loadGeocode(geocode_cache_file);
+	addresses, err := cfg.resolveAddresses(cliAddressesFile)
 	if err != nil {
-		log.Fatalf("Failed to initialize geocode cache: %v", err)	
+		fmt.Printf("Usage: go run . [-config config.yaml] [addresses-file]\n")
+		log.Fatalf("Failed to resolve addresses: %v", err)
 	}
-	
-	matrixCache, err := loadMatrix(matrix_cache_file);
+	fmt.Printf("\nLoaded %d addresses (config: %s)\n", len(addresses), *configPath)
+
+	geocodeCache, err := loadGeocode(cfg.Cache.GeocodeFile)
+	if err != nil {
+		log.Fatalf("Failed to initialize geocode cache: %v", err)
+	}
+
+	matrixCache, err := loadMatrix(cfg.Cache.MatrixFile)
 	if err != nil {
 		log.Fatalf("Failed to initialize matrix cache: %v", err)
 	}
 
 	defer func() {
-		err = saveGeocode(geocode_cache_file, geocodeCache)
-		if err != nil {
-			log.Fatalf("Failed to save geocode cache: %v", err);
+		if err := saveGeocode(cfg.Cache.GeocodeFile, geocodeCache); err != nil {
+			log.Fatalf("Failed to save geocode cache: %v", err)
 		}
-		err = saveMatrix(matrix_cache_file, matrixCache)
-		if err != nil {
-			log.Fatalf("Failed to save matrix cache: %v", err);
+		if err := saveMatrix(cfg.Cache.MatrixFile, matrixCache); err != nil {
+			log.Fatalf("Failed to save matrix cache: %v", err)
 		}
 	}()
-	
-	stops, durations, findIdx, err := SetupRouteData(addresses, geocodeCache, matrixCache)
+
+	stops, durations, err := SetupRouteData(addresses, geocodeCache, matrixCache)
 	if err != nil {
 		log.Fatalf("Error setting up route data: %v\n", err)
 	}
 
-	top_5_route, err := solve(stops, durations, findIdx, 5)
+	routes, err := solve(stops, durations, cfg.Solver.TopK)
 	if err != nil {
-		log.Fatalf("Failed to solve top 5 route: %v\n", err)
+		log.Fatalf("Failed to solve top %d routes: %v\n", cfg.Solver.TopK, err)
 	}
 
-	fmt.Printf("\nTop 5 route we calculate\n=====================\n")
-	for i, routeRes := range top_5_route {
-		fmt.Printf("Rank %d (Total: %.2f mins):\n", i+1, secondsToMinutes(routeRes.Duration))
+	fmt.Printf("\nTop %d routes\n=====================\n", cfg.Solver.TopK)
+	for i, routeRes := range routes {
+		total := routeRes.Duration
+		unit := "secs"
+		if cfg.Output.DurationUnit == "minutes" {
+			total = secondsToMinutes(routeRes.Duration)
+			unit = "mins"
+		}
+		fmt.Printf("Rank %d (Total: %.2f %s):\n", i+1, total, unit)
 		for _, idx := range routeRes.Path {
 			fmt.Printf("\t%s\n", stops[idx].Name)
 		}
 		fmt.Println()
 	}
-	
+
 	fmt.Printf("Finish\n")
 }

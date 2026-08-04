@@ -1,0 +1,33 @@
+# Route optimizer configuration (example)
+# Usage: go run . -config config.yaml
+#        go run . -config config.yaml path/to/addresses.txt   # overrides input.addresses_file
+# Address list can stay in a separate file, or be listed under input.addresses.
+
+solver:
+  # Return the top-K shortest open routes (depot fixed at index 0).
+  top_k: 5
+  # Hard cap on stop count (including depot). Brute-force is (n-1)! — keep this low.
+  max_stops: 15
+
+input:
+  # Path to newline-separated addresses (first line = depot).
+  addresses_file: addresses.txt
+  # Optional inline addresses (used if addresses_file is empty):
+  # addresses:
+  #   - "Grand Central Terminal, New York, NY"
+  #   - "Times Square, New York, NY"
+  #   - "Empire State Building, New York, NY"
+
+cache:
+  geocode_file: data/geocode_cache.json
+  matrix_file: data/matrix_cache.json
+
+http:
+  # Nominatim asks for ~1 req/s; keep timeouts modest.
+  geocode_timeout_sec: 5
+  osrm_timeout_sec: 10
+  user_agent: "GoRouteOptimizerApp/1.0 (student project)"
+
+output:
+  # Display unit for route totals (solver still works in seconds internally).
+  duration_unit: minutes
