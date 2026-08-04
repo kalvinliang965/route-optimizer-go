@@ -12,7 +12,7 @@ func SetupRouteData(addresses []string, geocodeCache GeocodeCache, matrixCache M
 		return nil, nil, nil, err
 	}
 	durations, findIdx, err := buildDistanceMatrix(stops, matrixCache)
-	return stops, durations, findIdx, nil
+	return stops, durations, findIdx, err
 }
 
 const (
