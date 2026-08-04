@@ -104,6 +104,66 @@ func TestGetDistance_CacheMissAndHit(t *testing.T) {
   }
 }
 
+// TestBuildDistanceMatrix_FetchesFullTableOnce: on a cold cache, building an N-stop
+// matrix should call OSRM table API once with all stops (not N*(N-1) pairwise calls).
+func TestBuildDistanceMatrix_FetchesFullTableOnce(t *testing.T) {
+  originalFetcher := FetchDurationMatrix
+  defer func() { FetchDurationMatrix = originalFetcher }()
+
+  stops := []Stop{
+    {Name: "Depot", Lat: 40.71, Lon: -74.00},
+    {Name: "A", Lat: 40.72, Lon: -74.01},
+    {Name: "B", Lat: 40.73, Lon: -74.02},
+  }
+
+  // Distinct off-diagonal durations so we can verify fill-from-table.
+  fullTable := [][]float64{
+    {0, 10, 20},
+    {11, 0, 30},
+    {21, 31, 0},
+  }
+
+  apiCallCount := 0
+  FetchDurationMatrix = func(reqStops []Stop) ([][]float64, error) {
+    apiCallCount++
+    if len(reqStops) != len(stops) {
+      t.Errorf("expected full-table fetch with %d stops, got %d", len(stops), len(reqStops))
+    }
+    return fullTable, nil
+  }
+
+  cache := make(MatrixCache)
+  matrix, _, err := buildDistanceMatrix(stops, cache)
+  if err != nil {
+    t.Fatalf("buildDistanceMatrix failed: %v", err)
+  }
+
+  if apiCallCount != 1 {
+    t.Fatalf("expected 1 OSRM table call on cold cache, got %d (pairwise fetch?)", apiCallCount)
+  }
+
+  for i := range stops {
+    for j := range stops {
+      if i == j {
+        continue
+      }
+      if matrix[i][j] != fullTable[i][j] {
+        t.Errorf("matrix[%d][%d] = %v; want %v", i, j, matrix[i][j], fullTable[i][j])
+      }
+    }
+  }
+
+  // Second build with warm cache should not hit the API again.
+  apiCallCount = 0
+  _, _, err = buildDistanceMatrix(stops, cache)
+  if err != nil {
+    t.Fatalf("warm-cache buildDistanceMatrix failed: %v", err)
+  }
+  if apiCallCount != 0 {
+    t.Errorf("expected 0 OSRM calls on warm cache, got %d", apiCallCount)
+  }
+}
+
 func TestFindIdxLogic(t *testing.T) {
   // 1. Prepare mock stops with names
   stops := []Stop{
