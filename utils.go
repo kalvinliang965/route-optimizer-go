@@ -64,26 +64,56 @@ func getStops(addresses []string, cache GeocodeCache) ([]Stop, error) {
   return stops, nil
 }
 
-func getDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
+func stopCoordKey(s Stop) string {
+  return fmt.Sprintf("%.6f, %.6f", s.Lat, s.Lon)
+}
 
-  src := fmt.Sprintf("%.6f, %.6f", from.Lat, from.Lon);
-  dest := fmt.Sprintf("%.6f, %.6f", to.Lat, to.Lon);
-
+func lookupCachedDistance(from Stop, to Stop, cache MatrixCache) (float64, bool) {
+  src := stopCoordKey(from)
+  dest := stopCoordKey(to)
   if srcMap, exists := cache[src]; exists {
-    if dist, exists := srcMap[dest]; exists {
-      fmt.Printf("[cache hit]");
-      return dist, nil;
+    if dist, ok := srcMap[dest]; ok {
+      return dist, true
     }
   }
+  return 0, false
+}
+
+func putCachedDistance(from Stop, to Stop, dist float64, cache MatrixCache) {
+  src := stopCoordKey(from)
+  dest := stopCoordKey(to)
+  if _, exists := cache[src]; !exists {
+    cache[src] = make(map[string]float64)
+  }
+  cache[src][dest] = dist
+}
+
+func getDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
+  if dist, ok := lookupCachedDistance(from, to, cache); ok {
+    fmt.Printf("[cache hit]")
+    return dist, nil
+  }
+  // Pairwise fallback for single-edge lookups (tests / ad-hoc use).
   durations, err := FetchDurationMatrix([]Stop{from, to})
   if err != nil {
     return -1, err
   }
-  if _, exists := cache[src]; !exists {
-    cache[src] = make(map[string]float64)
+  putCachedDistance(from, to, durations[0][1], cache)
+  return durations[0][1], nil
+}
+
+func matrixHasMissingEdges(stops []Stop, cache MatrixCache) bool {
+  for i := range stops {
+    for j := range stops {
+      if i == j {
+        continue
+      }
+      if _, ok := lookupCachedDistance(stops[i], stops[j], cache); !ok {
+        return true
+      }
+    }
   }
-  cache[src][dest] = durations[0][1]
-  return cache[src][dest], err
+  return false
 }
 
 func buildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(string) int, error) {
@@ -93,16 +123,39 @@ func buildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(str
     distMatrix[i] = make([]float64, n)
   }
 
+  // One full-table OSRM call fills every missing edge (rate-limit friendly).
+  if n > 1 && matrixHasMissingEdges(stops, cache) {
+    fmt.Printf("[Cache Miss] Fetching full duration table for %d stops\n", n)
+    table, err := FetchDurationMatrix(stops)
+    if err != nil {
+      return nil, nil, err
+    }
+    if len(table) != n {
+      return nil, nil, fmt.Errorf("osrm table size mismatch: got %d rows, want %d", len(table), n)
+    }
+    for i := 0; i < n; i++ {
+      if len(table[i]) != n {
+        return nil, nil, fmt.Errorf("osrm table size mismatch: row %d has %d cols, want %d", i, len(table[i]), n)
+      }
+      for j := 0; j < n; j++ {
+        if i == j {
+          continue
+        }
+        putCachedDistance(stops[i], stops[j], table[i][j], cache)
+      }
+    }
+  }
+
   for i := 0; i < n; i++ {
     for j := 0; j < n; j++ {
       if i == j {
         continue
       }
-      dist, err := getDistance(stops[i], stops[j], cache);
-      if err != nil {
-        return nil, nil, err
+      dist, ok := lookupCachedDistance(stops[i], stops[j], cache)
+      if !ok {
+        return nil, nil, fmt.Errorf("missing cached duration from stop %d to %d", i, j)
       }
-      distMatrix[i][j] = dist;
+      distMatrix[i][j] = dist
     }
   }
 
@@ -114,6 +167,6 @@ func buildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(str
     }
     return -1
   }
-  
-  return distMatrix,findIdx, nil
+
+  return distMatrix, findIdx, nil
 }

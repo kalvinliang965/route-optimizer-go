@@ -165,6 +165,17 @@ func TestBuildDistanceMatrix_FetchesFullTableOnce(t *testing.T) {
 }
 
 func TestFindIdxLogic(t *testing.T) {
+  originalFetcher := FetchDurationMatrix
+  defer func() { FetchDurationMatrix = originalFetcher }()
+  FetchDurationMatrix = func(stops []Stop) ([][]float64, error) {
+    n := len(stops)
+    table := make([][]float64, n)
+    for i := range table {
+      table[i] = make([]float64, n)
+    }
+    return table, nil
+  }
+
   // 1. Prepare mock stops with names
   stops := []Stop{
     {Name: "Grand Central Terminal", Lat: 40.7527, Lon: -73.9772},
