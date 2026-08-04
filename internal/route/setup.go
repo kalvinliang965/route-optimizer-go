@@ -26,9 +26,18 @@ func PersistCaches(cfg Config, geocodeCache GeocodeCache, matrixCache MatrixCach
 	return nil
 }
 
-// PrintRoutes prints ranked routes using config duration units.
+const routeSeparator = "--------------------------------------------------------------------------------"
+
+// PrintRoutes prints ranked routes with stop order and a Google Maps deep link per route.
 func PrintRoutes(routes []RouteResult, stops []Stop, cfg Config) error {
-	fmt.Printf("\nTop %d routes\n=====================\n", cfg.Solver.TopK)
+	if len(routes) == 0 {
+		fmt.Println("\nNo routes found.")
+		return nil
+	}
+
+	fmt.Printf("\nTop %d route(s)\n", len(routes))
+	fmt.Println(routeSeparator)
+
 	for i, routeRes := range routes {
 		total := routeRes.Duration
 		unit := "secs"
@@ -36,14 +45,27 @@ func PrintRoutes(routes []RouteResult, stops []Stop, cfg Config) error {
 			total = SecondsToMinutes(routeRes.Duration)
 			unit = "mins"
 		}
-		fmt.Printf("Rank %d (Total: %.2f %s):\n", i+1, total, unit)
-		for _, idx := range routeRes.Path {
+
+		fmt.Printf("\n#%d  %.2f %s\n", i+1, total, unit)
+		for step, idx := range routeRes.Path {
 			if idx < 0 || idx >= len(stops) {
 				return fmt.Errorf("route %d contains invalid stop index %d", i+1, idx)
 			}
-			fmt.Printf("\t%s\n", stops[idx].Name)
+			fmt.Printf("  %d. %s\n", step+1, stops[idx].Name)
 		}
-		fmt.Println()
+
+		mapsURL, err := GoogleMapsDirectionsURL(stops, routeRes.Path)
+		if err != nil {
+			return fmt.Errorf("route %d maps link: %w", i+1, err)
+		}
+		fmt.Println("\n  Open in Google Maps:")
+		fmt.Printf("  %s\n", mapsURL)
+
+		if i < len(routes)-1 {
+			fmt.Println("\n" + routeSeparator)
+		}
 	}
+
+	fmt.Println()
 	return nil
 }
