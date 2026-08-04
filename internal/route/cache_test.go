@@ -1,4 +1,4 @@
-package main;
+package route
 
 import (
 	"path/filepath"
@@ -17,12 +17,12 @@ func TestGeocodeCacheRoundTrip(t *testing.T) {
 		"456 Broad St": {Lat: 40.720000, Lon: -73.990000},
 	}
 
-	err := saveGeocode(filepath, originalCache);
+	err := SaveGeocode(filepath, originalCache);
 	if err != nil {
 		t.Fatalf("Failed to save geocode cache: %v", err)
 	}
 
-	loadedCache, err := loadGeocode(filepath)
+	loadedCache, err := LoadGeocode(filepath)
 	if err != nil {
 		t.Fatalf("Failed to load geocode cache: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestLoadGeocode_FileDoesNotExist(t *testing.T) {
 	nonExistentPath := filepath.Join(tmpDir, "does_not_exist.json")
 
 	// Should return an empty cache and NO error (based on your code design)
-	cache, err := loadGeocode(nonExistentPath)
+	cache, err := LoadGeocode(nonExistentPath)
 	if err != nil {
 		t.Errorf("expected no error for missing file, got %v", err)
 	}
@@ -62,12 +62,12 @@ func TestMatrixCacheRoundTrip(t *testing.T) {
 		},
 	}
 
-	err := saveMatrix(filePath, originalMatrix)
+	err := SaveMatrix(filePath, originalMatrix)
 	if err != nil {
 		t.Fatalf("failed to save matrix cache: %v", err)
 	}
 
-	loadedMatrix, err := loadMatrix(filePath)
+	loadedMatrix, err := LoadMatrix(filePath)
 	if err != nil {
 		t.Fatalf("failed to load matrix cache: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestLoadMatrix_FileDoesNotExist(t *testing.T) {
 	tmpDir := t.TempDir()
 	nonExistentPath := filepath.Join(tmpDir, "missing_matrix.json")
 
-	cache, err := loadMatrix(nonExistentPath)
+	cache, err := LoadMatrix(nonExistentPath)
 	if err != nil {
 		t.Errorf("expected no error for missing matrix file, got %v", err)
 	}

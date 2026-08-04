@@ -1,18 +1,56 @@
-package main
+package route
 
 import (
   "bufio"
+  "encoding/json"
   "fmt"
   "os"
+  "path/filepath"
   "strings"
 )
 
-// secondsToMinutes converts OSRM duration (seconds) to minutes for display.
-func secondsToMinutes(seconds float64) float64 {
+// SecondsToMinutes converts OSRM duration (seconds) to minutes for display.
+func SecondsToMinutes(seconds float64) float64 {
   return seconds / 60.0
 }
 
-func readAddressesFromFile(path string) ([]string, error) {
+// WriteJSON marshals v as indented JSON and writes it to path, creating parent dirs.
+func WriteJSON(path string, v interface{}) error {
+  data, err := json.MarshalIndent(v, "", "  ")
+  if err != nil {
+    return err
+  }
+  if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+    return err
+  }
+  return os.WriteFile(path, data, 0644)
+}
+
+// ReadJSON reads path and unmarshals JSON into dest.
+// Returns a wrapped error if the file is missing or invalid.
+func ReadJSON(path string, dest interface{}) error {
+  data, err := os.ReadFile(path)
+  if err != nil {
+    return err
+  }
+  return json.Unmarshal(data, dest)
+}
+
+// WriteStops writes an ordered stop list to JSON (geocode command artifact).
+func WriteStops(path string, stops []Stop) error {
+  return WriteJSON(path, stops)
+}
+
+// ReadStops loads an ordered stop list from JSON.
+func ReadStops(path string) ([]Stop, error) {
+  var stops []Stop
+  if err := ReadJSON(path, &stops); err != nil {
+    return nil, fmt.Errorf("read stops %s: %w", path, err)
+  }
+  return stops, nil
+}
+
+func ReadAddressesFromFile(path string) ([]string, error) {
   file, err := os.Open(path)
   if err != nil {
     err_msg := fmt.Sprintf("Failed to open files %s: %v", path, err)
@@ -36,7 +74,7 @@ func readAddressesFromFile(path string) ([]string, error) {
 }
 
 
-func getStop(addr string, cache GeocodeCache) (*Stop, error) {
+func GetStop(addr string, cache GeocodeCache) (*Stop, error) {
    if cachedStop, exists := cache[addr]; exists {
      fmt.Printf("Cache hit: %s\n", addr);
      return &cachedStop, nil;
@@ -50,12 +88,12 @@ func getStop(addr string, cache GeocodeCache) (*Stop, error) {
     return stopPtr, nil
 }
 
-func getStops(addresses []string, cache GeocodeCache) ([]Stop, error) {
+func GetStops(addresses []string, cache GeocodeCache) ([]Stop, error) {
   n := len(addresses)
   stops := make([]Stop, n);
   
   for i, addr := range addresses {
-    s, err := getStop(addr, cache)
+    s, err := GetStop(addr, cache)
     if err != nil {
       return nil, fmt.Errorf("Failed to build stops: %v", err)
     }
@@ -88,7 +126,7 @@ func putCachedDistance(from Stop, to Stop, dist float64, cache MatrixCache) {
   cache[src][dest] = dist
 }
 
-func getDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
+func GetDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
   if dist, ok := lookupCachedDistance(from, to, cache); ok {
     fmt.Printf("[cache hit]")
     return dist, nil
@@ -116,7 +154,7 @@ func matrixHasMissingEdges(stops []Stop, cache MatrixCache) bool {
   return false
 }
 
-func buildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(string) int, error) {
+func BuildDistanceMatrix(stops []Stop, cache MatrixCache) ([][]float64, func(string) int, error) {
   n := len(stops)
   distMatrix := make([][]float64, n)
   for i := range stops {

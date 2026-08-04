@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
   "fmt"
@@ -61,7 +61,7 @@ func TestSolveTopK(t *testing.T) {
 
   // Request top 2 routes (k = 2)
   k := 2
-  routes, err := solve(stops, matrix, k)
+  routes, err := Solve(stops, matrix, k)
 
   if err != nil {
     t.Fatalf("solve failed unexpectedly: %v", err)
@@ -91,11 +91,11 @@ func TestSolveTopK(t *testing.T) {
 
 // TestSolve_RejectsTooManyStops ensures we fail fast instead of enumerating (n-1)!.
 func TestSolve_RejectsTooManyStops(t *testing.T) {
-  old := maxStops
-  maxStops = 3
-  defer func() { maxStops = old }()
+  old := MaxStops
+  MaxStops = 3
+  defer func() { MaxStops = old }()
 
-  stops := make([]Stop, 4) // exceeds maxStops
+  stops := make([]Stop, 4) // exceeds MaxStops
   for i := range stops {
     stops[i] = Stop{Name: fmt.Sprintf("S%d", i)}
   }
@@ -104,9 +104,9 @@ func TestSolve_RejectsTooManyStops(t *testing.T) {
     matrix[i] = make([]float64, len(stops))
   }
 
-  _, err := solve(stops, matrix, 2)
+  _, err := Solve(stops, matrix, 2)
   if err == nil {
-    t.Fatal("expected error when stop count exceeds maxStops, got nil")
+    t.Fatal("expected error when stop count exceeds MaxStops, got nil")
   }
   if !strings.Contains(err.Error(), "max") && !strings.Contains(err.Error(), "too many") {
     t.Errorf("error should mention the stop limit, got: %v", err)
@@ -133,7 +133,7 @@ func TestSolveTopKKeepsShortestRoutes(t *testing.T) {
   }
 
   const k = 2
-  routes, err := solve(stops, matrix, k)
+  routes, err := Solve(stops, matrix, k)
   if err != nil {
     t.Fatalf("solve failed: %v", err)
   }

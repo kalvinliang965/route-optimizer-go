@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
 	"os"
@@ -7,9 +7,9 @@ import (
 )
 
 func TestLoadConfig_ExampleFile(t *testing.T) {
-	cfg, err := loadConfig("config.example.yaml")
+	cfg, err := LoadConfig(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {
-		t.Fatalf("loadConfig(config.example.yaml): %v", err)
+		t.Fatalf("LoadConfig(config.example.yaml): %v", err)
 	}
 	if cfg.Solver.TopK != 5 {
 		t.Errorf("TopK = %d; want 5", cfg.Solver.TopK)
@@ -31,20 +31,20 @@ func TestLoadConfig_ValidateTopK(t *testing.T) {
 	if err := os.WriteFile(path, []byte("solver:\n  top_k: 0\n  max_stops: 15\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadConfig(path)
+	_, err := LoadConfig(path)
 	if err == nil {
 		t.Fatal("expected validation error for top_k=0")
 	}
 }
 
 func TestConfig_ApplyRuntimeSetsMaxStops(t *testing.T) {
-	old := maxStops
-	defer func() { maxStops = old }()
+	old := MaxStops
+	defer func() { MaxStops = old }()
 
 	cfg := defaultConfig()
 	cfg.Solver.MaxStops = 7
-	cfg.applyRuntime()
-	if maxStops != 7 {
-		t.Errorf("maxStops = %d; want 7", maxStops)
+	cfg.ApplyRuntime()
+	if MaxStops != 7 {
+		t.Errorf("MaxStops = %d; want 7", MaxStops)
 	}
 }

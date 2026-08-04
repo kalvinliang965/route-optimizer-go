@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
   "encoding/json"
@@ -15,25 +15,25 @@ func pickResult(results []AddressStruct) AddressStruct {
   return results[0] // by default pick the first result
 }
 
-// Overridden from YAML via Config.applyRuntime / tests (httptest).
+// Overridden from YAML via Config.ApplyRuntime / tests (httptest).
 var (
-  geocodeTimeout   = 5 * time.Second
-  osrmTimeout      = 10 * time.Second
-  httpUserAgent    = "GoRouteOptimizerApp/1.0 (student project)"
-  nominatimBaseURL = "https://nominatim.openstreetmap.org"
-  osrmTableBaseURL = "http://router.project-osrm.org"
+  GeocodeTimeout   = 5 * time.Second
+  OSRMTimeout      = 10 * time.Second
+  HTTPUserAgent    = "GoRouteOptimizerApp/1.0 (student project)"
+  NominatimBaseURL = "https://nominatim.openstreetmap.org"
+  OSRMTableBaseURL = "http://router.project-osrm.org"
 )
 
 var FetchGeocodeAddress = func(address string) (*Stop, error) {
-  endpoint := fmt.Sprintf("%s/search?q=%s&format=json&limit=1", nominatimBaseURL, url.QueryEscape(address))
+  endpoint := fmt.Sprintf("%s/search?q=%s&format=json&limit=1", NominatimBaseURL, url.QueryEscape(address))
   req, err := http.NewRequest("GET", endpoint, nil)
   if err != nil {
     return nil, err
   }
 
-  req.Header.Set("User-Agent", httpUserAgent)
+  req.Header.Set("User-Agent", HTTPUserAgent)
 
-  client := &http.Client{Timeout: geocodeTimeout}
+  client := &http.Client{Timeout: GeocodeTimeout}
   resp, err := client.Do(req)
   if err != nil {
     return nil, err
@@ -95,15 +95,15 @@ var FetchDurationMatrix = func(stops []Stop) ([][]float64, error) {
   }
   coordinatesParam := strings.Join(coordStrs, ";")
 
-  apiURL := fmt.Sprintf("%s/table/v1/driving/%s?annotations=duration", osrmTableBaseURL, coordinatesParam)
+  apiURL := fmt.Sprintf("%s/table/v1/driving/%s?annotations=duration", OSRMTableBaseURL, coordinatesParam)
 
   req, err := http.NewRequest("GET", apiURL, nil)
   if err != nil {
     return nil, err
   }
-  req.Header.Set("User-Agent", httpUserAgent)
+  req.Header.Set("User-Agent", HTTPUserAgent)
 
-  client := &http.Client{Timeout: osrmTimeout}
+  client := &http.Client{Timeout: OSRMTimeout}
   resp, err := client.Do(req)
   if err != nil {
     return nil, err

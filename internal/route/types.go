@@ -1,4 +1,4 @@
-package main
+package route
 
 type OSMTripResponse struct {
   Code      string     `json:"code"`
@@ -26,9 +26,9 @@ type AddressStruct struct {
 }
 
 type Stop struct {
-  Name string
-  Lon  float64
-  Lat  float64
+  Name string	`json:"name"`
+  Lon  float64  `json:"lon"`
+  Lat  float64  `json:"lat"`
 }
 
 type OSRMTableResponse struct {

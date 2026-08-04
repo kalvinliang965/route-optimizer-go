@@ -1,5 +1,5 @@
 // api_cache_test.go
-package main
+package route
 
 import (
   "testing"
@@ -20,7 +20,7 @@ func TestGetStop_CacheMissAndHit(t *testing.T) {
   addr := "1280 Lexington Ave, New York, NY"
 
   // --- TEST 1: Cache Miss ---
-  stop, err := getStop(addr, cache)
+  stop, err := GetStop(addr, cache)
   if err != nil {
     t.Fatalf("unexpected error on cache miss: %v", err)
   }
@@ -39,7 +39,7 @@ func TestGetStop_CacheMissAndHit(t *testing.T) {
   }
 
   // --- TEST 2: Cache Hit ---
-  stop2, err := getStop(addr, cache)
+  stop2, err := GetStop(addr, cache)
   if err != nil {
     t.Fatalf("unexpected error on cache hit: %v", err)
   }
@@ -75,7 +75,7 @@ func TestGetDistance_CacheMissAndHit(t *testing.T) {
   to := Stop{Lat: 40.7589, Lon: -73.9851}
 
   // --- TEST 1: Cache Miss ---
-  dist, err := getDistance(from, to, cache)
+  dist, err := GetDistance(from, to, cache)
   if err != nil {
     t.Fatalf("unexpected error on distance cache miss: %v", err)
   }
@@ -89,7 +89,7 @@ func TestGetDistance_CacheMissAndHit(t *testing.T) {
   }
 
   // --- TEST 2: Cache Hit ---
-  dist2, err := getDistance(from, to, cache)
+  dist2, err := GetDistance(from, to, cache)
   if err != nil {
     t.Fatalf("unexpected error on distance cache hit: %v", err)
   }
@@ -133,7 +133,7 @@ func TestBuildDistanceMatrix_FetchesFullTableOnce(t *testing.T) {
   }
 
   cache := make(MatrixCache)
-  matrix, _, err := buildDistanceMatrix(stops, cache)
+  matrix, _, err := BuildDistanceMatrix(stops, cache)
   if err != nil {
     t.Fatalf("buildDistanceMatrix failed: %v", err)
   }
@@ -155,7 +155,7 @@ func TestBuildDistanceMatrix_FetchesFullTableOnce(t *testing.T) {
 
   // Second build with warm cache should not hit the API again.
   apiCallCount = 0
-  _, _, err = buildDistanceMatrix(stops, cache)
+  _, _, err = BuildDistanceMatrix(stops, cache)
   if err != nil {
     t.Fatalf("warm-cache buildDistanceMatrix failed: %v", err)
   }
@@ -187,7 +187,7 @@ func TestFindIdxLogic(t *testing.T) {
   cache := make(MatrixCache)
 
   // 2. Call buildDistanceMatrix to get the findIdx closure back
-  _, findIdx, err := buildDistanceMatrix(stops, cache)
+  _, findIdx, err := BuildDistanceMatrix(stops, cache)
   if err != nil {
     t.Fatalf("unexpected error building distance matrix: %v", err)
   }

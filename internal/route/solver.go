@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
   "container/heap"
@@ -49,13 +49,13 @@ type RouteResult struct {
   Duration float64
 }
 
-// maxStops caps brute-force permutations (n-1)!. Overridable in tests / future config.
-var maxStops = 15
+// MaxStops caps brute-force permutations (n-1)!. Overridable in tests / config.
+var MaxStops = 15
 
-func solve(stops []Stop, matrix [][]float64, k int) ([]RouteResult, error) {
+func Solve(stops []Stop, matrix [][]float64, k int) ([]RouteResult, error) {
   n := len(stops)
-  if n > maxStops {
-    return nil, fmt.Errorf("too many stops: %d (max %d)", n, maxStops)
+  if n > MaxStops {
+    return nil, fmt.Errorf("too many stops: %d (max %d)", n, MaxStops)
   }
   if n <= 1 {
     return []RouteResult{{Path: []int{0}, Duration: 0.0}}, nil

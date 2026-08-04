@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
 	"net/http"
@@ -14,9 +14,9 @@ func TestFetchGeocodeAddress_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	old := nominatimBaseURL
-	nominatimBaseURL = srv.URL
-	defer func() { nominatimBaseURL = old }()
+	old := NominatimBaseURL
+	NominatimBaseURL = srv.URL
+	defer func() { NominatimBaseURL = old }()
 
 	_, err := FetchGeocodeAddress("Times Square, New York, NY")
 	if err == nil {
@@ -34,9 +34,9 @@ func TestFetchDurationMatrix_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	old := osrmTableBaseURL
-	osrmTableBaseURL = srv.URL
-	defer func() { osrmTableBaseURL = old }()
+	old := OSRMTableBaseURL
+	OSRMTableBaseURL = srv.URL
+	defer func() { OSRMTableBaseURL = old }()
 
 	stops := []Stop{
 		{Name: "A", Lat: 40.71, Lon: -74.00},

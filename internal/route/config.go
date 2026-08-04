@@ -1,4 +1,4 @@
-package main
+package route
 
 import (
 	"fmt"
@@ -58,7 +58,7 @@ func defaultConfig() Config {
 	}
 }
 
-func loadConfig(path string) (Config, error) {
+func LoadConfig(path string) (Config, error) {
 	cfg := defaultConfig()
 
 	data, err := os.ReadFile(path)
@@ -95,20 +95,20 @@ func (c Config) validate() error {
 	return nil
 }
 
-func (c Config) applyRuntime() {
-	maxStops = c.Solver.MaxStops
-	geocodeTimeout = time.Duration(c.HTTP.GeocodeTimeoutSec) * time.Second
-	osrmTimeout = time.Duration(c.HTTP.OSRMTimeoutSec) * time.Second
-	httpUserAgent = c.HTTP.UserAgent
+func (c Config) ApplyRuntime() {
+	MaxStops = c.Solver.MaxStops
+	GeocodeTimeout = time.Duration(c.HTTP.GeocodeTimeoutSec) * time.Second
+	OSRMTimeout = time.Duration(c.HTTP.OSRMTimeoutSec) * time.Second
+	HTTPUserAgent = c.HTTP.UserAgent
 }
 
-func (c Config) resolveAddresses(cliAddressesFile string) ([]string, error) {
+func (c Config) ResolveAddresses(cliAddressesFile string) ([]string, error) {
 	path := cliAddressesFile
 	if path == "" {
 		path = c.Input.AddressesFile
 	}
 	if path != "" {
-		return readAddressesFromFile(path)
+		return ReadAddressesFromFile(path)
 	}
 	if len(c.Input.Addresses) > 0 {
 		return append([]string(nil), c.Input.Addresses...), nil
