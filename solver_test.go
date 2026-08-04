@@ -82,17 +82,70 @@ func TestSolveTopK(t *testing.T) {
 
   // Every route must start with 0 (the depot)
   for _, route := range routes {
-    if len(route) == 0 || route[0] != 0 {
-      t.Errorf("route %v does not start with depot index 0", route)
+    if len(route.Path) == 0 || route.Path[0] != 0 {
+      t.Errorf("route %v does not start with depot index 0", route.Path)
     }
-    if len(route) != len(stops) {
-      t.Errorf("route %v length mismatch, expected %d", route, len(stops))
+    if len(route.Path) != len(stops) {
+      t.Errorf("route %v length mismatch, expected %d", route.Path, len(stops))
     }
   }
 
   // Verify that the first route returned is a valid permutation of all stop indices
   expectedLength := len(stops)
-  if reflect.ValueOf(routes[0]).Len() != expectedLength {
+  if len(routes[0].Path) != expectedLength {
     t.Errorf("route length invalid")
+  }
+}
+
+// TestSolveTopKKeepsShortestRoutes catches the inverted bounded-heap bug:
+// a min-heap that pops when Len() > k discards the shortest routes and keeps the longest.
+func TestSolveTopKKeepsShortestRoutes(t *testing.T) {
+  stops := []Stop{
+    {Name: "Depot"},
+    {Name: "A"},
+    {Name: "B"},
+    {Name: "C"},
+  }
+
+  // Cheap chain Depot -> A -> B -> C (duration 3).
+  // All other permutations are much more expensive (201 or 300).
+  matrix := [][]float64{
+    {0, 1, 100, 100},
+    {0, 0, 1, 100},
+    {0, 100, 0, 1},
+    {0, 100, 100, 0},
+  }
+
+  const k = 2
+  routes, err := solve(stops, matrix, nil, k)
+  if err != nil {
+    t.Fatalf("solve failed: %v", err)
+  }
+  if len(routes) != k {
+    t.Fatalf("expected %d routes, got %d", k, len(routes))
+  }
+
+  // Ranked ascending: best first.
+  if routes[0].Duration > routes[1].Duration {
+    t.Errorf("routes not sorted ascending: got %.0f then %.0f", routes[0].Duration, routes[1].Duration)
+  }
+
+  // Best path must be the unique optimum Depot -> A -> B -> C.
+  wantBestPath := []int{0, 1, 2, 3}
+  wantBestDuration := 3.0
+  if routes[0].Duration != wantBestDuration {
+    t.Errorf("best duration = %.0f; want %.0f (heap likely kept longest routes)", routes[0].Duration, wantBestDuration)
+  }
+  if !reflect.DeepEqual(routes[0].Path, wantBestPath) {
+    t.Errorf("best path = %v; want %v", routes[0].Path, wantBestPath)
+  }
+
+  // Both returned durations must be among the two shortest possible totals: {3, 201}.
+  // (Worst totals are 300 — those must not appear when k=2.)
+  allowed := map[float64]bool{3: true, 201: true}
+  for i, r := range routes {
+    if !allowed[r.Duration] {
+      t.Errorf("route[%d] duration %.0f is not in top-%d shortest set {3, 201}", i, r.Duration, k)
+    }
   }
 }
