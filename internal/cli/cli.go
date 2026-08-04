@@ -44,12 +44,59 @@ func Run(command string, args []string) error {
 	case "geocode":
 		return runGeocode(args)
 	case "matrix":
-		return fmt.Errorf("matrix command not implemented yet")
+		return runMatrix(args)
 	case "itinerary":
 		return fmt.Errorf("itinerary command not implemented yet")
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+func runMatrix(args []string) error {
+	fs := flag.NewFlagSet("matrix", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to YAML config")
+	inPath := fs.String("in", "data/stops.json", "stops file")
+	outPath := fs.String("out", "data/matrix.json", "distance matrix file")
+	fs.Parse(args)
+
+	cfg, err := route.LoadConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config %q: %w", *configPath, err)
+	}
+	cfg.ApplyRuntime()
+
+	var stops []route.Stop
+	if err := route.ReadJSON(*inPath, &stops); err != nil {
+		return fmt.Errorf("read stops %s: %w", *inPath, err)
+	}
+	if len(stops) == 0 {
+		return fmt.Errorf("no stops in %s", *inPath)
+	}
+	if len(stops) > cfg.Solver.MaxStops {
+		return fmt.Errorf("too many stops: %d (max %d)", len(stops), cfg.Solver.MaxStops)
+	}
+
+	matrixCache, err := route.LoadMatrix(cfg.Cache.MatrixFile)
+	if err != nil {
+		return fmt.Errorf("load matrix cache: %w", err)
+	}
+
+	fmt.Printf("matrix: building %d×%d from %s\n", len(stops), len(stops), *inPath)
+	matrix, _, err := route.BuildDistanceMatrix(stops, matrixCache)
+	if err != nil {
+		return fmt.Errorf("build duration matrix: %w", err)
+	}
+
+	if err := route.SaveMatrix(cfg.Cache.MatrixFile, matrixCache); err != nil {
+		return fmt.Errorf("save matrix cache: %w", err)
+	}
+	if err := route.WriteJSON(*outPath, matrix); err != nil {
+		return fmt.Errorf("write matrix %s: %w", *outPath, err)
+	}
+
+	fmt.Printf("matrix: wrote %s (%d×%d); cache updated %s\n",
+		*outPath, len(matrix), len(matrix[0]), cfg.Cache.MatrixFile)
+	return nil
 }
 
 func runGeocode(args []string) error {

@@ -128,7 +128,6 @@ func putCachedDistance(from Stop, to Stop, dist float64, cache MatrixCache) {
 
 func GetDistance(from Stop, to Stop, cache MatrixCache) (float64, error) {
   if dist, ok := lookupCachedDistance(from, to, cache); ok {
-    fmt.Printf("[cache hit]")
     return dist, nil
   }
   // Pairwise fallback for single-edge lookups (tests / ad-hoc use).
