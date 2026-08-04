@@ -45,6 +45,10 @@ var FetchGeocodeAddress = func(address string) (*Stop, error) {
     return nil, err
   }
 
+  if resp.StatusCode != http.StatusOK {
+    return nil, fmt.Errorf("nominatim geocode request failed: %s", resp.Status)
+  }
+
   var results []AddressStruct
   if err := json.Unmarshal(body, &results); err != nil {
     return nil, fmt.Errorf("failed to parse JSON: %v", err)
@@ -109,6 +113,10 @@ var FetchDurationMatrix = func(stops []Stop) ([][]float64, error) {
   body, err := io.ReadAll(resp.Body)
   if err != nil {
     return nil, err
+  }
+
+  if resp.StatusCode != http.StatusOK {
+    return nil, fmt.Errorf("osrm table request failed: %s", resp.Status)
   }
 
   var tableResp OSRMTableResponse
