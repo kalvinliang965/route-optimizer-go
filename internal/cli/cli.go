@@ -23,21 +23,18 @@ func Usage() {
   route-optimizer <command> [flags]
 
 Commands:
-  geocode     -in addresses.txt  →  -out stops.json (lat/lon + display name)
-  matrix      -in stops.json     →  -out matrix.json (OSRM durations)
-  itinerary   -in stops.json -matrix matrix.json → top-K routes + Maps links
+  geocode     -addresses addresses.txt  →  -out stops.json (lat/lon + display name)
+  matrix      -stops stops.json         →  -out matrix.json (OSRM durations)
+  itinerary   -stops stops.json -matrix matrix.json → top-K routes + Maps links
 
 Shared flags:
   -config   YAML config (default: config.yaml)
-  -in       input file for this command (see above)
-  -out      output file (geocode / matrix)
 
 Examples:
-  route-optimizer geocode -in addresses.txt -out data/stops.json
-  route-optimizer matrix -in data/stops.json -out data/matrix.json
-  route-optimizer matrix -in data/stops.json -out data/matrix.json -refresh
-  route-optimizer itinerary -in data/stops.json -matrix data/matrix.json
-  route-optimizer itinerary -in data/stops.json -refresh-matrix
+  route-optimizer geocode -addresses addresses.txt -out data/stops.json
+  route-optimizer matrix -stops data/stops.json -out data/matrix.json
+  route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json
+  route-optimizer itinerary -stops data/stops.json -refresh-matrix
 
 Run 'route-optimizer <command> -h' for command-specific flags.
 `)
@@ -60,8 +57,8 @@ func Run(command string, args []string) error {
 func runItinerary(args []string) error {
 	fs := flag.NewFlagSet("itinerary", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
-	inPath := fs.String("in", "data/stops.json", "input stops JSON from geocode")
-	matrixPath := fs.String("matrix", "data/matrix.json", "input duration matrix JSON from matrix")
+	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
+	matrixPath := fs.String("matrix", "data/matrix.json", "duration matrix JSON from matrix")
 	refreshMatrix := fs.Bool("refresh-matrix", false, "rebuild matrix.json from stops (uses OSRM/cache) before solving")
 	fs.Parse(args)
 
@@ -72,11 +69,11 @@ func runItinerary(args []string) error {
 	cfg.ApplyRuntime()
 
 	var stops []route.Stop
-	if err := route.ReadJSON(*inPath, &stops); err != nil {
-		return fmt.Errorf("read stops %s: %w", *inPath, err)
+	if err := route.ReadJSON(*stopsPath, &stops); err != nil {
+		return fmt.Errorf("read stops %s: %w", *stopsPath, err)
 	}
 	if len(stops) == 0 {
-		return fmt.Errorf("no stops in %s", *inPath)
+		return fmt.Errorf("no stops in %s", *stopsPath)
 	}
 	if len(stops) > cfg.Solver.MaxStops {
 		return fmt.Errorf("too many stops: %d (max %d)", len(stops), cfg.Solver.MaxStops)
@@ -104,7 +101,7 @@ func runItinerary(args []string) error {
 		}
 	}
 
-	fmt.Printf("itinerary: solving top %d from %s + %s\n", cfg.Solver.TopK, *inPath, *matrixPath)
+	fmt.Printf("itinerary: solving top %d from %s + %s\n", cfg.Solver.TopK, *stopsPath, *matrixPath)
 	routes, err := route.Solve(stops, matrix, cfg.Solver.TopK)
 	if err != nil {
 		return fmt.Errorf("solve: %w", err)
@@ -115,7 +112,7 @@ func runItinerary(args []string) error {
 func runMatrix(args []string) error {
 	fs := flag.NewFlagSet("matrix", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
-	inPath := fs.String("in", "data/stops.json", "input stops JSON from geocode")
+	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
 	outPath := fs.String("out", "data/matrix.json", "output duration matrix JSON")
 	fs.Parse(args)
 
@@ -126,17 +123,17 @@ func runMatrix(args []string) error {
 	cfg.ApplyRuntime()
 
 	var stops []route.Stop
-	if err := route.ReadJSON(*inPath, &stops); err != nil {
-		return fmt.Errorf("read stops %s: %w", *inPath, err)
+	if err := route.ReadJSON(*stopsPath, &stops); err != nil {
+		return fmt.Errorf("read stops %s: %w", *stopsPath, err)
 	}
 	if len(stops) == 0 {
-		return fmt.Errorf("no stops in %s", *inPath)
+		return fmt.Errorf("no stops in %s", *stopsPath)
 	}
 	if len(stops) > cfg.Solver.MaxStops {
 		return fmt.Errorf("too many stops: %d (max %d)", len(stops), cfg.Solver.MaxStops)
 	}
 
-	fmt.Printf("matrix: building %d×%d from %s\n", len(stops), len(stops), *inPath)
+	fmt.Printf("matrix: building %d×%d from %s\n", len(stops), len(stops), *stopsPath)
 	matrix, err := buildMatrixArtifact(stops, cfg.Cache.MatrixFile)
 	if err != nil {
 		return err
@@ -154,7 +151,7 @@ func runMatrix(args []string) error {
 func runGeocode(args []string) error {
 	fs := flag.NewFlagSet("geocode", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
-	inPath := fs.String("in", "addresses.txt", "addresses file")
+	addressesPath := fs.String("addresses", "addresses.txt", "newline-separated addresses file")
 	outPath := fs.String("out", "data/stops.json", "output stops file")
 	fs.Parse(args)
 
@@ -164,7 +161,7 @@ func runGeocode(args []string) error {
 	}
 	cfg.ApplyRuntime()
 
-	addresses, err := cfg.ResolveAddresses(*inPath)
+	addresses, err := cfg.ResolveAddresses(*addressesPath)
 	if err != nil {
 		return fmt.Errorf("resolve addresses: %w", err)
 	}
@@ -176,7 +173,7 @@ func runGeocode(args []string) error {
 			len(addresses), cfg.Solver.MaxStops)
 	}
 
-	fmt.Printf("geocode: resolving %d addresses from %s\n", len(addresses), *inPath)
+	fmt.Printf("geocode: resolving %d addresses from %s\n", len(addresses), *addressesPath)
 
 	cache, err := route.LoadGeocode(cfg.Cache.GeocodeFile)
 	if err != nil {
