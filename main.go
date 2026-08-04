@@ -67,7 +67,7 @@ func main() {
 
 	fmt.Printf("\nTop 5 route we calculate\n=====================\n")
 	for i, routeRes := range top_5_route {
-		fmt.Printf("Rank %d (Total: %.2f mins):\n", i+1, routeRes.Duration)
+		fmt.Printf("Rank %d (Total: %.2f mins):\n", i+1, secondsToMinutes(routeRes.Duration))
 		for _, idx := range routeRes.Path {
 			fmt.Printf("\t%s\n", stops[idx].Name)
 		}

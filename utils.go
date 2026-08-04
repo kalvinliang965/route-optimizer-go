@@ -7,6 +7,11 @@ import (
   "strings"
 )
 
+// secondsToMinutes converts OSRM duration (seconds) to minutes for display.
+func secondsToMinutes(seconds float64) float64 {
+  return seconds / 60.0
+}
+
 func readAddressesFromFile(path string) ([]string, error) {
   file, err := os.Open(path)
   if err != nil {
