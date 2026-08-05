@@ -58,7 +58,8 @@ module and CLI; later we can package the matrix builder and solver separately.
 | Edge Geometry Service (`pepsi`) | Initial working | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
 | DOT Traffic Fetcher | Planned | Pulls latest NYC DOT Traffic Speeds rows from Socrata/SODA | planned `data/dot_traffic_cache.json` |
 | Local Matching Service | Planned | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
-| EMA Matrix Updater | Planned | Converts live DOT speeds into smoothed per-edge traffic multipliers | planned `data/traffic_cache.json` |
+| Traffic Snapshot Builder | Initial working | Loops edge metadata through an edge-state fetcher, applies EMA, and builds `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
+| Traffic Cache/EMA Persistence | Planned | Persists previous smoothed traffic values for future EMA updates | planned `data/traffic_cache.json` |
 | Solver Service | Working | Brute-force stop order search from fixed depot index `0`, retaining top-K routes | ranked `RouteResult`s |
 | Maps/Itinerary Output | Working | Prints ranked stops, total duration, and Google Maps deep links | terminal output |
 
@@ -177,6 +178,13 @@ go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
   -matrix data/matrix.json
 
+# 5. Solve using fake/demo edge traffic fixture + EMA
+go run ./cmd/route-optimizer itinerary \
+  -stops data/stops.json \
+  -matrix data/matrix.json \
+  -edge-metadata data/edge_metadata.json \
+  -edge-state-fixture pepsi/testdata/edge_state_fixture.json
+
 # Rebuild matrix before solving
 go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
@@ -191,11 +199,8 @@ go run ./cmd/route-optimizer refresh-traffic \
   -stops data/stops.json \
   -edges data/edge_metadata.json
 
-# Solve using traffic overlay
-go run ./cmd/route-optimizer itinerary \
-  -stops data/stops.json \
-  -matrix data/matrix.json \
-  -traffic data/traffic_cache.json
+# Solve using live DOT-backed traffic cache
+# (same itinerary path, but the edge-state source will become DOT-backed)
 ```
 
 ## Repository Layout
@@ -230,6 +235,9 @@ Working:
 - Edge metadata command with OSRM `/route` geometry artifacts.
 - Itinerary command with top-K solver and Google Maps links.
 - `ApplyTraffic` multiplier engine.
+- `pepsi` traffic snapshot loop from edge metadata to EMA-smoothed adjusted matrix.
+- Fixture-backed edge-state fetcher for fake/demo traffic flows.
+- Itinerary fixture traffic flags for solving against an adjusted in-memory matrix.
 - YAML traffic fixture loader.
 
 WIP/planned:

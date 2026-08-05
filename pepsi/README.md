@@ -204,7 +204,11 @@ Empty matches are acceptable; the traffic layer should then use multiplier
 7. Add tests using `httptest` fixtures for full artifact generation. Done.
 8. Add a CLI command, `edge-metadata`, that reads `data/stops.json` and writes
    `data/edge_metadata.json`. Done.
-9. Add local DOT matching after the metadata artifact is stable.
+9. Add `BuildTrafficSnapshot` and `ApplyEdgeTraffic` around an abstract edge
+   state fetcher, with EMA smoothing. Done.
+10. Add fixture-backed edge-state fetcher for fake/demo traffic flows. Done.
+11. Wire fixture-backed edge traffic into the `itinerary` CLI path. Done.
+12. Add local DOT matching after the metadata artifact is stable.
 
 ## Current State
 
@@ -215,6 +219,14 @@ This package is not complete yet, but the edge artifact builder is in place:
   list.
 - `WriteEdgeMetadata` and `ReadEdgeMetadata` round-trip the artifact JSON.
 - The CLI exposes this through `route-optimizer edge-metadata`.
+- `BuildTrafficSnapshot` loops edges through an `EdgeStateFetcher` and applies
+  EMA to current/previous multipliers.
+- `ApplyEdgeTraffic` turns those smoothed states into an adjusted matrix
+  through `route.ApplyTraffic`.
+- `LoadFixtureEdgeStateFetcher` loads fake/demo traffic states from
+  `testdata/edge_state_fixture.json`.
+- The `itinerary` command can apply the fixture-backed traffic overlay with
+  `-edge-metadata` and `-edge-state-fixture`.
 - Unit tests mock OSRM with `httptest`.
 - Parser tests read a real recorded OSRM response from
   `testdata/osrm_route_response.json`.

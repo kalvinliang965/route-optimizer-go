@@ -40,6 +40,7 @@ Examples:
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
   route-optimizer edge-metadata -stops data/stops.json -out data/edge_metadata.json
   route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json
+  route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json -edge-state-fixture pepsi/testdata/edge_state_fixture.json
   route-optimizer itinerary -stops data/stops.json -refresh-matrix
 
 Run 'route-optimizer <command> -h' for command-specific flags.
@@ -113,6 +114,12 @@ func runItinerary(args []string) error {
 	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
 	matrixPath := fs.String("matrix", "data/matrix.json", "duration matrix JSON from matrix")
 	refreshMatrix := fs.Bool("refresh-matrix", false, "rebuild matrix.json from stops (uses OSRM/cache) before solving")
+	edgeMetadataPath := fs.String("edge-metadata", "data/edge_metadata.json", "edge metadata JSON for traffic overlay")
+	edgeStateFixturePath := fs.String("edge-state-fixture", "", "fixture JSON with per-edge current/previous traffic multipliers")
+	trafficDefaultMultiplier := fs.Float64("traffic-default-multiplier", 1.0, "default traffic multiplier for edges without traffic state")
+	trafficEMAAlpha := fs.Float64("traffic-ema-alpha", 0.3, "EMA alpha for current vs previous traffic multiplier")
+	trafficMinMultiplier := fs.Float64("traffic-min-multiplier", 0.5, "minimum traffic multiplier clamp")
+	trafficMaxMultiplier := fs.Float64("traffic-max-multiplier", 3.0, "maximum traffic multiplier clamp")
 	fs.Parse(args)
 
 	cfg, err := route.LoadConfig(*configPath)
@@ -152,6 +159,30 @@ func runItinerary(args []string) error {
 		if err := route.WriteJSON(*matrixPath, matrix); err != nil {
 			return fmt.Errorf("write matrix %s: %w", *matrixPath, err)
 		}
+	}
+
+	if *edgeStateFixturePath != "" {
+		metadata, err := pepsi.ReadEdgeMetadata(*edgeMetadataPath)
+		if err != nil {
+			return fmt.Errorf("read edge metadata: %w", err)
+		}
+		fetcher, err := pepsi.LoadFixtureEdgeStateFetcher(*edgeStateFixturePath)
+		if err != nil {
+			return fmt.Errorf("load edge state fixture: %w", err)
+		}
+		opts := pepsi.TrafficOptions{
+			DefaultMultiplier: *trafficDefaultMultiplier,
+			EMAAlpha:          *trafficEMAAlpha,
+			MinMultiplier:     *trafficMinMultiplier,
+			MaxMultiplier:     *trafficMaxMultiplier,
+		}
+		adjusted, snap, err := pepsi.ApplyEdgeTraffic(context.Background(), matrix, metadata, fetcher, opts)
+		if err != nil {
+			return fmt.Errorf("apply edge traffic: %w", err)
+		}
+		matrix = adjusted
+		fmt.Printf("itinerary: applied traffic fixture %s via %s (%d edge multipliers, alpha %.2f)\n",
+			*edgeStateFixturePath, *edgeMetadataPath, len(snap.EdgeMultipliers), opts.EMAAlpha)
 	}
 
 	fmt.Printf("itinerary: solving top %d from %s + %s\n", cfg.Solver.TopK, *stopsPath, *matrixPath)
