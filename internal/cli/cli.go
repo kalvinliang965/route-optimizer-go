@@ -50,6 +50,7 @@ func Run(command string, args []string) error {
 	case "itinerary":
 		return runItinerary(args)
 	default:
+		Usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
 }
