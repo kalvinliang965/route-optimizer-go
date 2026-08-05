@@ -9,6 +9,19 @@ matrix stable, build route geometry metadata for each matrix cell, match those
 routes to NYC DOT traffic links, smooth live traffic with EMA, then solve using
 an adjusted in-memory matrix.
 
+## Summary Contract
+
+This project is a **planner**, not the final navigation executor. It optimizes
+the stop order under our own planning model: OSRM baseline durations plus an
+optional NYC DOT traffic overlay. Google Maps is the handoff for turn-by-turn
+execution after a route order is chosen.
+
+That means the top route is best under **our** matrix at solve time, not a claim
+that Google Maps would choose the same roads or rank every stop order the same
+way. Google may dynamically route around congestion between two stops. We keep
+this honest by showing top-K options, keeping traffic multipliers conservative,
+and treating Maps links as execution links rather than optimization inputs.
+
 ## Core Idea
 
 Every route between two stops is one matrix cell:
@@ -42,7 +55,7 @@ module and CLI; later we can package the matrix builder and solver separately.
 |---|---|---|---|
 | Address/Geocode Service | Working | Reads address input and resolves lat/lon with Nominatim plus cache | `data/stops.json`, `data/geocode_cache.json` |
 | Baseline Matrix Service | Working | Builds the full N x N OSRM duration table for the stops | `data/matrix.json`, `data/matrix_cache.json` |
-| Edge Geometry Service (`pepsi`) | Design/WIP | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | planned `data/edge_metadata.json` |
+| Edge Geometry Service (`pepsi`) | Initial working | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
 | DOT Traffic Fetcher | Planned | Pulls latest NYC DOT Traffic Speeds rows from Socrata/SODA | planned `data/dot_traffic_cache.json` |
 | Local Matching Service | Planned | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
 | EMA Matrix Updater | Planned | Converts live DOT speeds into smoothed per-edge traffic multipliers | planned `data/traffic_cache.json` |
@@ -154,7 +167,12 @@ go run ./cmd/route-optimizer matrix \
   -stops data/stops.json \
   -out data/matrix.json
 
-# 3. Solve top-K routes and print Maps links
+# 3. Stops -> OSRM route geometry per matrix cell
+go run ./cmd/route-optimizer edge-metadata \
+  -stops data/stops.json \
+  -out data/edge_metadata.json
+
+# 4. Solve top-K routes and print Maps links
 go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
   -matrix data/matrix.json
@@ -168,11 +186,6 @@ go run ./cmd/route-optimizer itinerary \
 Planned commands:
 
 ```bash
-# Build OSRM route geometry per matrix cell
-go run ./cmd/route-optimizer edge-metadata \
-  -stops data/stops.json \
-  -out data/edge_metadata.json
-
 # Refresh DOT traffic and EMA cache
 go run ./cmd/route-optimizer refresh-traffic \
   -stops data/stops.json \
@@ -214,13 +227,13 @@ Working:
 
 - Geocode command with Nominatim cache.
 - Matrix command with OSRM table cache.
+- Edge metadata command with OSRM `/route` geometry artifacts.
 - Itinerary command with top-K solver and Google Maps links.
 - `ApplyTraffic` multiplier engine.
 - YAML traffic fixture loader.
 
 WIP/planned:
 
-- `pepsi` should become the edge geometry metadata builder.
 - DOT/Socrata fetcher.
 - Local OSRM geometry to DOT `link_id` matcher.
 - EMA-backed traffic cache.
@@ -229,8 +242,8 @@ WIP/planned:
 
 Known dev note:
 
-- The `pepsi` package is not complete yet. It should be made compile-safe before
-  using `go test ./...` as the main verification command.
+- The `pepsi` package is compile-safe and can build `edge_metadata.json`.
+  DOT matching and traffic overlay integration are still planned.
 
 ## Testing
 

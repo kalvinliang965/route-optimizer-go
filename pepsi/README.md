@@ -1,60 +1,231 @@
-# Dynamic Traffic-Aware Routing Architecture
+# Pepsi: Edge Geometry Metadata Builder
 
-A high-performance routing and live traffic integration pipeline bridging Open Source Routing Machine (OSRM) with real-time New York City Department of Transportation (NYC DOT) telemetry via the Socrata API.
+`pepsi` is the scratch/WIP package for turning a plain OSRM duration matrix into
+something traffic-aware.
 
----
+The core route optimizer already has this:
 
-## 1. System Architecture
-
-The core philosophy of this architecture is separating **static geometric routing** from **dynamic traffic overlay ingestion**. Because external public traffic APIs cannot be queried infinitely per route request, the system relies on an upfront mapping phase and a background polling loop.
-
-```
-+-----------------------------------------------------------------+
-|                        1. Upfront Mapping                       |
-|                                                                 |
-|  [OSRM /route API] ---> Extracts Step Geometries & Street Names |
-|                                |                                |
-|                                v                                |
-|  [Spatial Matcher] ---> Cross-references against NYC DOT        |
-|                         Sensor Coordinates (link_points)        |
-|                                |                                |
-|                                v                                |
-|  [Routing Matrix]  ---> Binds Matrix Edges to Target link_ids   |
-+-----------------------------------------------------------------+
-                                 |
-                                 v
-+-----------------------------------------------------------------+
-|                     2. Runtime Dynamic Flow                     |
-|                                                                 |
-|  [Socrata API] <--- Batched HTTP Polling (link_id IN (...))     |
-|       |                                                         |
-|       v                                                         |
-|  [In-Memory Cache] -> Updates Matrix Cell Weights Dynamically   |
-|       |                                                         |
-|       v                                                         |
-|  [Routing Solver] -> Computes live traffic-adjusted paths       |
-+-----------------------------------------------------------------+
+```text
+matrix[i][j] = baseline drive time from stop i to stop j
 ```
 
-### Component Breakdown
-1. **Routing Backbone (OSRM):** Generates baseline path geometries, turn-by-turn steps, and raw free-flow durations/distances between coordinate nodes.
-2. **Spatial Translation Layer:** Translates OSRM route steps and coordinate boundaries into corresponding NYC DOT `link_id` identifiers.
-3. **Live Ingestion Layer (Socrata API):** Periodically polls the NYC DOT Traffic Speeds dataset in efficient batches using SoQL `IN` clauses to fetch live speeds and travel times.
-4. **Dynamic Routing Matrix:** Overwrites static OSRM matrix edge costs with real-time traffic penalties.
+`pepsi` should answer the missing question:
 
----
+```text
+What road geometry does matrix cell i -> j use?
+```
 
-## 2. Current Implementation State & Required Fixes
+Once we know that geometry, another layer can match it to NYC DOT traffic links,
+smooth live traffic with EMA, and update the in-memory matrix before solving.
 
-### What Works
-* Successfully queries OSRM endpoints (`/route/v1/driving/` and `/table/v1/driving/`) to retrieve route legs, step details, and base duration matrices.
-* Successfully queries the Socrata endpoint for specific `link_id` records using SoQL filter parameters (`$where`, `$order`, `$limit`).
+## Accuracy Contract
 
-### Identified Gaps & Required Refactoring
-The current implementation of the matrix builder only captures aggregate durations (e.g., base travel time). To support real-time traffic adjustments, **the matrix generation step must be extended to capture and retain all underlying spatial link points / path geometry.**
+`pepsi` does not produce the exact Google Maps route. It produces the OSRM route
+geometry that our planner uses to estimate which matrix cells are affected by
+NYC DOT traffic links.
 
-#### Required Changes:
-1. **Geometry Retention:** During OSRM route parsing, store the complete sequence of coordinate points and step names associated with each matrix edge rather than discarding them after calculating base duration.
-2. **Upfront Spatial Indexing:** Implement a spatial matching function in Go to compare OSRM path segments against the bounding boxes or coordinate points of NYC DOT sensors (`link_points`).
-3. **`link_id` Binding:** Map each routing matrix edge directly to a slice of target `link_id` strings (`[]string`).
-4. **Batched Ingestion Integration:** Feed the compiled list of mapped `link_id`s into a central background polling worker that fetches updates from Socrata in a single aggregated batch request.
+The final executor is Google Maps. Google may choose different turn-by-turn
+roads at navigation time, especially if it sees live conditions that our OSRM +
+DOT model does not capture. So the honest claim is:
+
+```text
+The optimizer ranks stop orders under our OSRM + DOT planning model.
+Google Maps executes the chosen stop order with its own routing model.
+```
+
+## Package Goal
+
+For an ordered stop list, build an edge metadata artifact for every directed
+stop pair:
+
+```text
+stop i -> stop j
+```
+
+Each edge should contain:
+
+- `from_stop`: source stop index
+- `to_stop`: destination stop index
+- `baseline_duration_sec`: OSRM route duration for this edge
+- `baseline_distance_m`: OSRM route distance for this edge
+- `geometry`: sampled route coordinates from OSRM `/route`
+- `steps`: optional OSRM step names and maneuver metadata
+- `matched_dot_link_ids`: empty at first, filled later by local matching
+
+Planned output:
+
+```text
+data/edge_metadata.json
+```
+
+## Not This Package
+
+`pepsi` should stay focused. It should not own:
+
+- the top-K route solver
+- the final adjusted matrix application
+- EMA smoothing
+- itinerary printing
+- Google Maps links
+
+Those belong to the main route package / CLI pipeline.
+
+`pepsi` may eventually include the local geometry matcher, but it should still
+produce data rather than directly solve routes.
+
+## Why Edge Metadata Exists
+
+OSRM `/table` is efficient for building the baseline duration matrix, but it
+only gives aggregate cell values:
+
+```text
+0 -> 1 = 620 seconds
+0 -> 2 = 480 seconds
+```
+
+Traffic data from NYC DOT is link-based:
+
+```text
+link_id
+speed
+travel_time
+data_as_of
+link_points
+link_name
+borough
+```
+
+DOT does not tell us "stop 0 to stop 1 is slow." It tells us "road link 123 is
+slow." Edge metadata bridges that gap:
+
+```text
+matrix cell 0 -> 1
+  -> OSRM route geometry
+  -> nearby/matched DOT link_ids
+  -> traffic multiplier for this cell
+```
+
+## Target Flow
+
+```text
+data/stops.json
+  -> pepsi edge builder
+  -> OSRM /route request for each i -> j
+  -> data/edge_metadata.json
+
+data/edge_metadata.json + DOT traffic cache
+  -> local matcher
+  -> edge metadata with matched DOT link_ids
+
+matched DOT link_ids + live speeds
+  -> traffic multiplier / EMA layer
+  -> TrafficSnapshot
+
+TrafficSnapshot + data/matrix.json
+  -> ApplyTraffic
+  -> adjusted in-memory matrix
+  -> solver
+```
+
+## Artifact Sketch
+
+```json
+{
+  "generated_at": "2026-08-05T00:00:00Z",
+  "source": "osrm-route",
+  "stops_hash": "optional-stable-hash",
+  "edges": [
+    {
+      "from_stop": 0,
+      "to_stop": 1,
+      "baseline_duration_sec": 620.4,
+      "baseline_distance_m": 3201.7,
+      "geometry": [
+        {"lat": 40.729661, "lon": -73.974688},
+        {"lat": 40.731200, "lon": -73.976100}
+      ],
+      "steps": [
+        {
+          "name": "1st Avenue",
+          "duration_sec": 120.0,
+          "distance_m": 600.0
+        }
+      ],
+      "matched_dot_link_ids": []
+    }
+  ]
+}
+```
+
+## OSRM Route Fetching
+
+Use OSRM `/route`, not `/table`, for this package:
+
+```text
+/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&steps=true&geometries=geojson
+```
+
+Important implementation notes:
+
+- Fetch directed edges; `i -> j` and `j -> i` may differ.
+- Skip diagonal edges where `i == j`.
+- Reuse the same HTTP timeout and user-agent config style as the main package.
+- Cache results on disk so demo runs do not repeatedly hit OSRM.
+- Parse into typed structs, not `map[string]interface{}`.
+
+## Local Matching Plan
+
+Do not query Socrata once per OSRM intermediate point. Instead:
+
+1. Fetch DOT traffic rows separately and cache them.
+2. Parse DOT `link_points` into local coordinate polylines.
+3. Simplify or sample OSRM geometry before matching.
+4. Compare OSRM route segments to nearby DOT link segments locally.
+5. Store matched `link_id`s back on the edge metadata.
+
+For a demo, start conservative:
+
+- sample route points every `50-150m`
+- match within about `50-100m`
+- optionally prefer DOT links whose `link_name` resembles an OSRM step name
+- if no link matches an edge, leave `matched_dot_link_ids` empty
+
+Empty matches are acceptable; the traffic layer should then use multiplier
+`1.0` for that edge.
+
+## Implementation Milestones
+
+1. Make `pepsi` compile-safe so `go test ./...` can run. Done.
+2. Replace the hard-coded probe with typed OSRM route response structs. Done.
+3. Add `FetchEdge(ctx, stops, from, to)` with mocked OSRM tests. Done.
+4. Add a recorded OSRM `testdata` fixture and pure parser test. Done.
+5. Add `BuildEdgeMetadata(ctx, stops []route.Stop)`. Done.
+6. Add JSON read/write helpers for `edge_metadata.json`. Done.
+7. Add tests using `httptest` fixtures for full artifact generation. Done.
+8. Add a CLI command, `edge-metadata`, that reads `data/stops.json` and writes
+   `data/edge_metadata.json`. Done.
+9. Add local DOT matching after the metadata artifact is stable.
+
+## Current State
+
+This package is not complete yet, but the edge artifact builder is in place:
+
+- `Client.FetchEdge` fetches one directed OSRM `/route` edge.
+- `Client.BuildEdgeMetadata` builds all directed non-diagonal edges for a stop
+  list.
+- `WriteEdgeMetadata` and `ReadEdgeMetadata` round-trip the artifact JSON.
+- The CLI exposes this through `route-optimizer edge-metadata`.
+- Unit tests mock OSRM with `httptest`.
+- Parser tests read a real recorded OSRM response from
+  `testdata/osrm_route_response.json`.
+- A real OSRM integration test exists but is skipped unless
+  `PEPSI_RUN_OSRM_INTEGRATION=1`.
+
+Regenerate the recorded fixture with:
+
+```bash
+PEPSI_RECORD_OSRM_FIXTURE=1 go test ./pepsi -run TestRecordOSRMRouteFixture -count=1 -v
+```
+
+The immediate goal is not live traffic. The immediate goal is a stable,
+testable edge metadata artifact that the traffic layer can consume.

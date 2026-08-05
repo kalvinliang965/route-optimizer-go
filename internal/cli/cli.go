@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"time"
 
 	"route-optimizer-go/internal/route"
+	"route-optimizer-go/pepsi"
 )
 
 // Execute parses os.Args and runs the selected subcommand.
@@ -25,6 +29,7 @@ func Usage() {
 Commands:
   geocode     -addresses addresses.txt  →  -out stops.json (lat/lon + display name)
   matrix      -stops stops.json         →  -out matrix.json (OSRM durations)
+  edge-metadata -stops stops.json       →  -out edge_metadata.json (OSRM route geometry)
   itinerary   -stops stops.json -matrix matrix.json → top-K routes + Maps links
 
 Shared flags:
@@ -33,6 +38,7 @@ Shared flags:
 Examples:
   route-optimizer geocode -addresses addresses.txt -out data/stops.json
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
+  route-optimizer edge-metadata -stops data/stops.json -out data/edge_metadata.json
   route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json
   route-optimizer itinerary -stops data/stops.json -refresh-matrix
 
@@ -47,12 +53,58 @@ func Run(command string, args []string) error {
 		return runGeocode(args)
 	case "matrix":
 		return runMatrix(args)
+	case "edge-metadata":
+		return runEdgeMetadata(args)
 	case "itinerary":
 		return runItinerary(args)
 	default:
 		Usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+func runEdgeMetadata(args []string) error {
+	fs := flag.NewFlagSet("edge-metadata", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to YAML config")
+	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
+	outPath := fs.String("out", "data/edge_metadata.json", "output edge metadata JSON")
+	osrmBaseURL := fs.String("osrm-base-url", pepsi.DefaultOSRMRouteBaseURL, "OSRM route service base URL")
+	fs.Parse(args)
+
+	cfg, err := route.LoadConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config %q: %w", *configPath, err)
+	}
+	cfg.ApplyRuntime()
+
+	var stops []route.Stop
+	if err := route.ReadJSON(*stopsPath, &stops); err != nil {
+		return fmt.Errorf("read stops %s: %w", *stopsPath, err)
+	}
+	if len(stops) == 0 {
+		return fmt.Errorf("no stops in %s", *stopsPath)
+	}
+	if len(stops) > cfg.Solver.MaxStops {
+		return fmt.Errorf("too many stops: %d (max %d)", len(stops), cfg.Solver.MaxStops)
+	}
+
+	client := pepsi.NewClient(*osrmBaseURL)
+	client.UserAgent = cfg.HTTP.UserAgent
+	client.HTTPClient = &http.Client{
+		Timeout: time.Duration(cfg.HTTP.OSRMTimeoutSec) * time.Second,
+	}
+
+	fmt.Printf("edge-metadata: building %d directed edges from %s\n", len(stops)*(len(stops)-1), *stopsPath)
+	metadata, err := client.BuildEdgeMetadata(context.Background(), stops)
+	if err != nil {
+		return fmt.Errorf("build edge metadata: %w", err)
+	}
+	if err := pepsi.WriteEdgeMetadata(*outPath, metadata); err != nil {
+		return fmt.Errorf("write edge metadata %s: %w", *outPath, err)
+	}
+
+	fmt.Printf("edge-metadata: wrote %s (%d edges)\n", *outPath, len(metadata.Edges))
+	return nil
 }
 
 func runItinerary(args []string) error {
