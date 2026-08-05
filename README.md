@@ -1,36 +1,253 @@
-# Project README: Manhattan Multi-Stop Route Optimizer
+# Manhattan Multi-Stop Route Optimizer
 
-## Overview
-A high-performance, command-line routing engine written in **Go**. The tool computes optimal multi-stop travel paths (limited to a depot plus up to 14 localized stops) across Manhattan using brute-force permutations backed by a **Bounded Min-Heap** algorithm (`container/heap`) to extract the top-$K$ shortest routes instantly.
+Go CLI proof-of-concept for ranking small Manhattan driving itineraries. The
+current demo path takes an ordered stop list, builds an OSRM duration matrix,
+solves the top-K stop orders, and prints Google Maps direction links.
 
----
+The next architecture layer is traffic-aware routing: keep the OSRM baseline
+matrix stable, build route geometry metadata for each matrix cell, match those
+routes to NYC DOT traffic links, smooth live traffic with EMA, then solve using
+an adjusted in-memory matrix.
 
-## What We Currently Have (Phase 1: Core Engine & CLI)
+## Core Idea
 
-* **Permutation Engine:** Exhaustively calculates valid route combinations starting from a fixed depot index (`0`).
-* **Bounded Top-$K$ Min-Heap (`container/heap`):** Efficiently caps memory consumption and stores the top performing paths sorted by duration.
-* **Interactive Terminal CLI Loop (`bufio`):** A REPL-style menu system allowing users to view stops, execute calculations, and inspect ranked results cleanly in the terminal.
-* **Structured Output:** Displays formatted options complete with rank, total travel duration, and step-by-step stop listings.
+Every route between two stops is one matrix cell:
 
----
+```text
+matrix[i][j] = baseline drive time from stop i to stop j
+```
 
-## Next Steps (Phase 2: Local Architecture & Usability)
+OSRM can tell us the baseline time. To make that cell traffic-aware, we also
+need to know which road geometry the cell uses and which NYC DOT traffic links
+overlap that geometry.
 
-* **Configuration & Input Parsing:** Support file inputs (`JSON`/`CSV`) for importing custom stop schedules and street locations dynamically instead of hardcoded structs.
-* **Distance Matrix Integration:** Implement structural handlers to easily swap between Euclidean distance estimations, mock Manhattan grid layouts, or pre-calculated static distance tables.
-* **Error Resilience:** Add graceful edge-case handling for malformed routes, missing stop mappings, and bounds checking.
+```text
+OSRM baseline matrix       -> stable on disk
+OSRM route geometry        -> edge metadata per matrix cell
+NYC DOT traffic records    -> latest speeds for DOT link_ids
+local matcher              -> binds DOT link_ids to matrix cells
+EMA traffic updater        -> smooths noisy traffic multipliers
+solver                     -> ranks routes using adjusted matrix
+```
 
----
+Important rule: `data/matrix.json` remains the OSRM baseline. Traffic produces a
+temporary adjusted matrix for solving; it should not overwrite the baseline.
 
-## Future Final Goal (Phase 3: Real-Time Manhattan Traffic Data)
+## Logical Services
 
-The ultimate vision is to evolve this static calculator into a **zero-cost, real-time context-aware engine** leveraging free public municipal infrastructure data sources within Manhattan.
+These are "services" as architecture boundaries. Today most live inside one Go
+module and CLI; later we can package the matrix builder and solver separately.
 
-### The Target Architecture:
-1. **Free Data Providers:** 
-   * Integrating **NYC Open Data (DOT Traffic Speeds)** or the **511NY REST API** (using background caching workers to stay well beneath strict rate limits like 10 calls/minute).
-2. **The Caching & Matching Pipeline:**
-   * A background worker routine in Go that periodically fetches live link speeds and incident alerts.
-   * A spatial coordinate mapping layer that correlates raw NYC segment IDs/sensors to local route matrices.
-3. **Dynamic Edge-Weight Updates:**
-   * Injecting real-time congestion multipliers directly into the `matrix [][]float64` weights *before* passing the data to the permutation solver and min-heap.
+| Service | Status | Owns | Output |
+|---|---|---|---|
+| Address/Geocode Service | Working | Reads address input and resolves lat/lon with Nominatim plus cache | `data/stops.json`, `data/geocode_cache.json` |
+| Baseline Matrix Service | Working | Builds the full N x N OSRM duration table for the stops | `data/matrix.json`, `data/matrix_cache.json` |
+| Edge Geometry Service (`pepsi`) | Design/WIP | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | planned `data/edge_metadata.json` |
+| DOT Traffic Fetcher | Planned | Pulls latest NYC DOT Traffic Speeds rows from Socrata/SODA | planned `data/dot_traffic_cache.json` |
+| Local Matching Service | Planned | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
+| EMA Matrix Updater | Planned | Converts live DOT speeds into smoothed per-edge traffic multipliers | planned `data/traffic_cache.json` |
+| Solver Service | Working | Brute-force stop order search from fixed depot index `0`, retaining top-K routes | ranked `RouteResult`s |
+| Maps/Itinerary Output | Working | Prints ranked stops, total duration, and Google Maps deep links | terminal output |
+
+## Data Flow
+
+### Current Demo Flow
+
+```text
+addresses.txt
+  -> geocode
+  -> data/stops.json
+  -> matrix
+  -> data/matrix.json
+  -> itinerary
+  -> top-K routes + Google Maps links
+```
+
+### Target Traffic-Aware Flow
+
+```text
+data/stops.json
+  -> Baseline Matrix Service
+  -> data/matrix.json
+
+data/stops.json
+  -> Edge Geometry Service / pepsi
+  -> data/edge_metadata.json
+
+NYC DOT Socrata API
+  -> DOT Traffic Fetcher
+  -> data/dot_traffic_cache.json
+
+data/edge_metadata.json + data/dot_traffic_cache.json
+  -> Local Matching Service
+  -> matrix edge -> []DOT link_id bindings
+
+DOT latest speeds + previous traffic_cache.json
+  -> EMA Matrix Updater
+  -> TrafficSnapshot multipliers
+
+data/matrix.json + TrafficSnapshot
+  -> ApplyTraffic
+  -> adjusted in-memory matrix
+  -> Solver Service
+```
+
+## Traffic Model
+
+DOT/Socrata does not return "stop 0 to stop 1 is slow." It returns traffic rows
+for road links:
+
+```text
+link_id
+speed
+travel_time
+data_as_of
+link_points
+link_name
+borough
+```
+
+The local matcher decides which DOT links overlap each OSRM route cell. Once a
+cell has matched links, the traffic updater can convert live speeds into a
+multiplier:
+
+```text
+adjusted[i][j] = baseline[i][j] * traffic_multiplier[i][j]
+```
+
+Use EMA to smooth noisy live updates:
+
+```text
+ema = alpha * latest_multiplier + (1 - alpha) * previous_ema
+```
+
+Start with `alpha = 0.3` for demos. Later we can use a time-aware EMA based on
+poll interval or half-life.
+
+## Geometry Matching Strategy
+
+Do not call Socrata once per OSRM intermediate point. That would be slow and
+fragile. Instead:
+
+1. Fetch DOT rows in batches and cache them.
+2. Parse DOT `link_points` locally.
+3. Fetch OSRM `/route` geometry once per matrix cell and cache it.
+4. Simplify or sample OSRM points before matching.
+5. Match OSRM route segments to nearby DOT link segments within a distance
+   tolerance.
+6. Store matched `link_id`s on the edge metadata.
+
+If an edge has no DOT match, keep multiplier `1.0`.
+
+## CLI
+
+The current CLI uses stdlib `flag` with manual subcommand dispatch.
+
+```bash
+# 1. Addresses -> geocoded stops
+go run ./cmd/route-optimizer geocode \
+  -addresses addresses.txt \
+  -out data/stops.json
+
+# 2. Stops -> OSRM baseline matrix
+go run ./cmd/route-optimizer matrix \
+  -stops data/stops.json \
+  -out data/matrix.json
+
+# 3. Solve top-K routes and print Maps links
+go run ./cmd/route-optimizer itinerary \
+  -stops data/stops.json \
+  -matrix data/matrix.json
+
+# Rebuild matrix before solving
+go run ./cmd/route-optimizer itinerary \
+  -stops data/stops.json \
+  -refresh-matrix
+```
+
+Planned commands:
+
+```bash
+# Build OSRM route geometry per matrix cell
+go run ./cmd/route-optimizer edge-metadata \
+  -stops data/stops.json \
+  -out data/edge_metadata.json
+
+# Refresh DOT traffic and EMA cache
+go run ./cmd/route-optimizer refresh-traffic \
+  -stops data/stops.json \
+  -edges data/edge_metadata.json
+
+# Solve using traffic overlay
+go run ./cmd/route-optimizer itinerary \
+  -stops data/stops.json \
+  -matrix data/matrix.json \
+  -traffic data/traffic_cache.json
+```
+
+## Repository Layout
+
+```text
+cmd/route-optimizer/main.go   # CLI entrypoint
+internal/cli/cli.go           # subcommands and orchestration
+internal/route/               # geocode, matrix, solver, maps, traffic helpers
+pepsi/                        # current scratch area for edge geometry / DOT ideas
+config.example.yaml           # config template
+```
+
+Local demo artifacts may exist but are ignored by git:
+
+```text
+addresses.txt
+config.yaml
+data/stops.json
+data/matrix.json
+data/geocode_cache.json
+data/matrix_cache.json
+data/traffic_fixture.yaml
+docs/
+```
+
+## Current Implementation State
+
+Working:
+
+- Geocode command with Nominatim cache.
+- Matrix command with OSRM table cache.
+- Itinerary command with top-K solver and Google Maps links.
+- `ApplyTraffic` multiplier engine.
+- YAML traffic fixture loader.
+
+WIP/planned:
+
+- `pepsi` should become the edge geometry metadata builder.
+- DOT/Socrata fetcher.
+- Local OSRM geometry to DOT `link_id` matcher.
+- EMA-backed traffic cache.
+- `itinerary` traffic overlay flags.
+- Packaging matrix and solver boundaries.
+
+Known dev note:
+
+- The `pepsi` package is not complete yet. It should be made compile-safe before
+  using `go test ./...` as the main verification command.
+
+## Testing
+
+Core route optimizer packages:
+
+```bash
+go test ./cmd/route-optimizer ./internal/...
+```
+
+Full repo, once `pepsi` is compile-safe:
+
+```bash
+go test ./...
+```
+
+## Demo Scope
+
+This is built for small daily route batches, typically around 6-10 stops. The
+solver uses exhaustive permutation search from a fixed depot, so it is a good
+demo/pilot fit but not a large fleet VRP engine.
