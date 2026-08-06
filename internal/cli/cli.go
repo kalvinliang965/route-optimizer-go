@@ -82,7 +82,7 @@ func printUsage(w io.Writer) {
 Run with no arguments to show this help.
 
 Commands:
-  all            Run geocode → matrix → itinerary
+  all            Run the baseline pipeline; add -dot-traffic for live traffic
   geocode        Resolve addresses into stops
   matrix         Build the baseline OSRM duration matrix
   edge-metadata  Build directed OSRM route geometry
@@ -91,6 +91,7 @@ Commands:
 
 Examples:
   route-optimizer all examples/addresses.txt
+  route-optimizer all -dot-traffic examples/addresses.txt
   route-optimizer all -config config.yaml -addresses addresses.txt
   route-optimizer geocode -addresses addresses.txt -out data/stops.json
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
@@ -139,17 +140,27 @@ func rejectPositionalArgs(fs *flag.FlagSet) error {
 		fs.Name(), fs.Args(), fs.Name())
 }
 
-// runAll executes the stable, dependency-light demo path. The traffic-aware
-// edge metadata and DOT matching stages remain explicit because they require
-// substantially more live requests and optional Socrata configuration.
+// runAll executes the stable, dependency-light demo path. When -dot-traffic is
+// set, it also rebuilds route geometry, matches NYC DOT links, and applies the
+// latest DOT speeds before solving.
 func runAll(args []string) error {
-	fs := newCommandFlagSet("all", "all [flags] [addresses-file]", "Run geocode, matrix, and itinerary in sequence.")
+	fs := newCommandFlagSet("all", "all [flags] [addresses-file]", "Run the baseline demo pipeline, optionally including live NYC DOT traffic.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	addressesPath := fs.String("addresses", "", "newline-separated addresses file")
 	stopsPath := fs.String("stops-out", "data/stops.json", "output stops JSON")
 	matrixPath := fs.String("matrix-out", "data/matrix.json", "output duration matrix JSON")
+	dotTraffic := fs.Bool("dot-traffic", false, "also build and match edge metadata, then apply live NYC DOT traffic")
+	edgeMetadataPath := fs.String("edge-metadata-out", "data/edge_metadata.json", "output OSRM edge metadata JSON (with -dot-traffic)")
+	matchedEdgeMetadataPath := fs.String("matched-edge-metadata-out", "data/edge_metadata_matched.json", "output DOT-matched edge metadata JSON (with -dot-traffic)")
+	osrmBaseURL := fs.String("osrm-base-url", pepsi.DefaultOSRMRouteBaseURL, "OSRM route service base URL (with -dot-traffic)")
+	dotEndpoint := fs.String("dot-endpoint", pepsi.DefaultDOTTrafficEndpoint, "NYC DOT Traffic Speeds Socrata endpoint (with -dot-traffic)")
+	dotAppToken := fs.String("dot-app-token", os.Getenv("SOCRATA_APP_TOKEN"), "Socrata app token for DOT traffic requests (with -dot-traffic)")
+	dotMatchLimit := fs.Int("dot-match-limit", pepsi.DefaultDOTMatchLimit, "recent DOT rows used for link matching (with -dot-traffic)")
 	if err := parseCommandFlags(fs, args); err != nil {
 		return err
+	}
+	if *dotMatchLimit < 1 {
+		return fmt.Errorf("dot-match-limit must be >= 1, got %d", *dotMatchLimit)
 	}
 
 	positional := fs.Args()
@@ -164,7 +175,11 @@ func runAll(args []string) error {
 	}
 	selectedConfigPath := allConfigPath(*configPath)
 
-	fmt.Printf("all: geocode → matrix → itinerary\n")
+	if *dotTraffic {
+		fmt.Printf("all: geocode → matrix → edge-metadata → match-edges → traffic-aware itinerary\n")
+	} else {
+		fmt.Printf("all: geocode → matrix → itinerary\n")
+	}
 	if selectedConfigPath != *configPath {
 		fmt.Printf("all: %s not found; using %s\n", *configPath, selectedConfigPath)
 	}
@@ -186,15 +201,75 @@ func runAll(args []string) error {
 	}); err != nil {
 		return fmt.Errorf("all matrix: %w", err)
 	}
-	if err := runItinerary([]string{
+
+	itineraryArgs := []string{
 		"-config", selectedConfigPath,
 		"-stops", *stopsPath,
 		"-matrix", *matrixPath,
-	}); err != nil {
+	}
+	if *dotTraffic {
+		if err := warnBeforeArtifactRebuild(*edgeMetadataPath); err != nil {
+			return fmt.Errorf("all edge-metadata: %w", err)
+		}
+		if err := runEdgeMetadata([]string{
+			"-config", selectedConfigPath,
+			"-stops", *stopsPath,
+			"-out", *edgeMetadataPath,
+			"-osrm-base-url", *osrmBaseURL,
+		}); err != nil {
+			return fmt.Errorf("all edge-metadata: %w", err)
+		}
+
+		if err := warnBeforeArtifactRebuild(*matchedEdgeMetadataPath); err != nil {
+			return fmt.Errorf("all match-edges: %w", err)
+		}
+		if err := runMatchEdges([]string{
+			"-config", selectedConfigPath,
+			"-edge-metadata", *edgeMetadataPath,
+			"-out", *matchedEdgeMetadataPath,
+			"-dot-endpoint", *dotEndpoint,
+			"-dot-app-token", *dotAppToken,
+			"-dot-match-limit", fmt.Sprint(*dotMatchLimit),
+		}); err != nil {
+			return fmt.Errorf("all match-edges: %w", err)
+		}
+
+		itineraryArgs = append(itineraryArgs,
+			"-edge-metadata", *matchedEdgeMetadataPath,
+			"-dot-traffic",
+			"-dot-endpoint", *dotEndpoint,
+			"-dot-app-token", *dotAppToken,
+		)
+	}
+
+	if err := runItinerary(itineraryArgs); err != nil {
 		return fmt.Errorf("all itinerary: %w", err)
 	}
 
-	fmt.Printf("all: complete; artifacts written to %s and %s\n", *stopsPath, *matrixPath)
+	if *dotTraffic {
+		fmt.Printf("all: complete; artifacts written to %s, %s, %s, and %s\n",
+			*stopsPath, *matrixPath, *edgeMetadataPath, *matchedEdgeMetadataPath)
+	} else {
+		fmt.Printf("all: complete; artifacts written to %s and %s\n", *stopsPath, *matrixPath)
+	}
+	return nil
+}
+
+// warnBeforeArtifactRebuild deliberately does not delete path. Each stage
+// builds its replacement in memory first, so a failed rebuild leaves the old
+// artifact available instead of destroying the last successful result.
+func warnBeforeArtifactRebuild(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect existing artifact %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("artifact path %s is a directory", path)
+	}
+	fmt.Fprintf(os.Stderr, "all: warning: %s already exists; rebuilding and replacing it after the stage succeeds\n", path)
 	return nil
 }
 
@@ -295,8 +370,7 @@ func runMatchEdges(args []string) error {
 	dotFixturePath := fs.String("dot-fixture", "", "fixture JSON array of DOT traffic records; if empty, fetch live DOT rows")
 	dotEndpoint := fs.String("dot-endpoint", pepsi.DefaultDOTTrafficEndpoint, "NYC DOT Traffic Speeds Socrata endpoint")
 	dotAppToken := fs.String("dot-app-token", os.Getenv("SOCRATA_APP_TOKEN"), "Socrata app token for DOT traffic requests")
-	dotPageLimit := fs.Int("dot-page-limit", pepsi.DefaultDOTPageLimit, "DOT rows per Socrata page when fetching live rows")
-	dotMaxPages := fs.Int("dot-max-pages", 0, "maximum DOT pages to fetch; 0 means until a short page")
+	dotMatchLimit := fs.Int("dot-match-limit", pepsi.DefaultDOTMatchLimit, "number of recent DOT rows used for link geometry matching")
 	matchMaxDistance := fs.Float64("match-max-distance-m", pepsi.DefaultMatchMaxDistanceM, "maximum distance from any DOT link point to an OSRM edge")
 	matchMaxAverageDistance := fs.Float64("match-max-average-distance-m", pepsi.DefaultMatchMaxAverageDistanceM, "maximum average distance from DOT link points to an OSRM edge")
 	matchMaxLinksPerEdge := fs.Int("match-max-links-per-edge", 0, "maximum matched DOT links per edge; 0 means no limit")
@@ -306,6 +380,9 @@ func runMatchEdges(args []string) error {
 	}
 	if err := rejectPositionalArgs(fs); err != nil {
 		return err
+	}
+	if *dotMatchLimit < 1 {
+		return fmt.Errorf("dot-match-limit must be >= 1, got %d", *dotMatchLimit)
 	}
 
 	cfg, err := route.LoadConfig(*configPath)
@@ -331,17 +408,14 @@ func runMatchEdges(args []string) error {
 		dotClient.AppToken = *dotAppToken
 		dotClient.UserAgent = cfg.HTTP.UserAgent
 		dotClient.HTTPClient = &http.Client{
-			Timeout: time.Duration(cfg.HTTP.OSRMTimeoutSec) * time.Second,
+			Timeout: time.Duration(cfg.HTTP.DOTTimeoutSec) * time.Second,
 		}
 
-		records, err = dotClient.FetchAllTrafficRecords(context.Background(), pepsi.DOTFetchAllOptions{
-			Limit:    *dotPageLimit,
-			MaxPages: *dotMaxPages,
-		})
+		records, err = dotClient.FetchRecentTrafficRecords(context.Background(), *dotMatchLimit)
 		if err != nil {
 			return fmt.Errorf("fetch DOT traffic records: %w", err)
 		}
-		sourceLabel = fmt.Sprintf("DOT traffic %s", *dotEndpoint)
+		sourceLabel = fmt.Sprintf("recent DOT snapshot %s (%d rows)", *dotEndpoint, len(records))
 	}
 
 	matched, summary, err := pepsi.MatchDOTLinks(metadata, records, pepsi.MatchOptions{
@@ -359,6 +433,9 @@ func runMatchEdges(args []string) error {
 
 	fmt.Printf("match-edges: matched %d/%d edges with %d DOT link bindings from %s (%d candidate links, %d skipped links)\n",
 		summary.MatchedEdgeCount, summary.EdgeCount, summary.TotalMatchedLinks, sourceLabel, summary.CandidateLinkCount, summary.SkippedLinkCount)
+	if summary.MatchedEdgeCount == 0 {
+		fmt.Fprintln(os.Stderr, "match-edges: warning: no DOT links matched any route edge; no live traffic can be applied")
+	}
 	fmt.Printf("match-edges: wrote %s\n", *outPath)
 	return nil
 }
@@ -457,7 +534,7 @@ func runItinerary(args []string) error {
 			dotClient.AppToken = *dotAppToken
 			dotClient.UserAgent = cfg.HTTP.UserAgent
 			dotClient.HTTPClient = &http.Client{
-				Timeout: time.Duration(cfg.HTTP.OSRMTimeoutSec) * time.Second,
+				Timeout: time.Duration(cfg.HTTP.DOTTimeoutSec) * time.Second,
 			}
 			dotClient.ChunkSize = *dotChunkSize
 			dotClient.LimitPerLink = *dotLimitPerLink
@@ -475,8 +552,16 @@ func runItinerary(args []string) error {
 			return fmt.Errorf("apply edge traffic: %w", err)
 		}
 		matrix = adjusted
-		fmt.Printf("itinerary: applied %s via %s (%d edge multipliers, alpha %.2f)\n",
-			sourceLabel, *edgeMetadataPath, len(snap.EdgeMultipliers), opts.EMAAlpha)
+		if *dotTraffic {
+			fmt.Printf("itinerary: applied %s via %s (%d edge multipliers; current snapshot, no persisted EMA history)\n",
+				sourceLabel, *edgeMetadataPath, len(snap.EdgeMultipliers))
+		} else {
+			fmt.Printf("itinerary: applied %s via %s (%d edge multipliers, alpha %.2f)\n",
+				sourceLabel, *edgeMetadataPath, len(snap.EdgeMultipliers), opts.EMAAlpha)
+		}
+		if *dotTraffic && len(snap.EdgeMultipliers) == 0 {
+			fmt.Fprintln(os.Stderr, "itinerary: warning: live DOT produced no usable edge multipliers; using the configured default multiplier")
+		}
 	}
 
 	fmt.Printf("itinerary: solving top %d from %s + %s\n", cfg.Solver.TopK, *stopsPath, *matrixPath)

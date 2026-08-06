@@ -17,8 +17,8 @@ type Config struct {
 }
 
 type SolverConfig struct {
-	TopK      int `yaml:"top_k"`
-	MaxStops  int `yaml:"max_stops"`
+	TopK     int `yaml:"top_k"`
+	MaxStops int `yaml:"max_stops"`
 }
 
 type InputConfig struct {
@@ -34,6 +34,7 @@ type CacheConfig struct {
 type HTTPConfig struct {
 	GeocodeTimeoutSec int    `yaml:"geocode_timeout_sec"`
 	OSRMTimeoutSec    int    `yaml:"osrm_timeout_sec"`
+	DOTTimeoutSec     int    `yaml:"dot_timeout_sec"`
 	UserAgent         string `yaml:"user_agent"`
 }
 
@@ -52,6 +53,7 @@ func defaultConfig() Config {
 		HTTP: HTTPConfig{
 			GeocodeTimeoutSec: 5,
 			OSRMTimeoutSec:    10,
+			DOTTimeoutSec:     30,
 			UserAgent:         "GoRouteOptimizerApp/1.0 (student project)",
 		},
 		Output: OutputConfig{DurationUnit: "minutes"},
@@ -86,6 +88,9 @@ func (c Config) validate() error {
 	}
 	if c.HTTP.OSRMTimeoutSec < 1 {
 		return fmt.Errorf("http.osrm_timeout_sec must be >= 1, got %d", c.HTTP.OSRMTimeoutSec)
+	}
+	if c.HTTP.DOTTimeoutSec < 1 {
+		return fmt.Errorf("http.dot_timeout_sec must be >= 1, got %d", c.HTTP.DOTTimeoutSec)
 	}
 	switch c.Output.DurationUnit {
 	case "minutes", "seconds":

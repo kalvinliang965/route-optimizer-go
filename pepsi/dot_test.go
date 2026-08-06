@@ -18,7 +18,7 @@ func TestDOTClientFetchTrafficRecordsBuildsSocrataQuery(t *testing.T) {
 		if got := r.Header.Get("User-Agent"); got != "test-agent" {
 			t.Fatalf("User-Agent = %q, want test-agent", got)
 		}
-		if got := r.URL.Query().Get("$select"); got != "link_id,speed,travel_time,status,data_as_of,link_name,borough,link_points,encoded_poly_line" {
+		if got := r.URL.Query().Get("$select"); got != dotSpeedSelectFields {
 			t.Fatalf("$select = %q", got)
 		}
 		if got := r.URL.Query().Get("$where"); got != "link_id in('link-a','link-b')" {
@@ -59,47 +59,39 @@ func TestDOTClientFetchTrafficRecordsBuildsSocrataQuery(t *testing.T) {
 	}
 }
 
-func TestDOTClientFetchAllTrafficRecordsPaginates(t *testing.T) {
-	requestOffsets := []string{}
+func TestDOTClientFetchRecentTrafficRecordsBuildsSnapshotQuery(t *testing.T) {
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("$select"); got != dotTrafficSelectFields {
+		requestCount++
+		if got := r.URL.Query().Get("$select"); got != dotMatchSelectFields {
 			t.Fatalf("$select = %q", got)
 		}
-		if got := r.URL.Query().Get("$order"); got != "link_id ASC,data_as_of DESC" {
+		if got := r.URL.Query().Get("$order"); got != "data_as_of DESC,link_id ASC" {
 			t.Fatalf("$order = %q", got)
 		}
 		if got := r.URL.Query().Get("$limit"); got != "2" {
 			t.Fatalf("$limit = %q, want 2", got)
 		}
-
-		offset := r.URL.Query().Get("$offset")
-		requestOffsets = append(requestOffsets, offset)
-		switch offset {
-		case "0":
-			writeDOTRecords(t, w, []DOTTrafficRecord{
-				{LinkID: "link-a", Speed: "12.5", DataAsOf: "2026-08-05T12:00:00"},
-				{LinkID: "link-b", Speed: "20", DataAsOf: "2026-08-05T12:00:00"},
-			})
-		case "2":
-			writeDOTRecords(t, w, []DOTTrafficRecord{
-				{LinkID: "link-c", Speed: "25", DataAsOf: "2026-08-05T12:00:00"},
-			})
-		default:
-			t.Fatalf("unexpected offset: %s", offset)
+		if got := r.URL.Query().Get("$offset"); got != "" {
+			t.Fatalf("$offset = %q, want no pagination", got)
 		}
+		writeDOTRecords(t, w, []DOTTrafficRecord{
+			{LinkID: "link-a", LinkPoints: "40.0,-73.0 40.1,-73.1", DataAsOf: "2026-08-05T12:00:00"},
+			{LinkID: "link-b", LinkPoints: "40.2,-73.2 40.3,-73.3", DataAsOf: "2026-08-05T12:00:00"},
+		})
 	}))
 	defer server.Close()
 
 	client := NewDOTClient(server.URL)
-	records, err := client.FetchAllTrafficRecords(context.Background(), DOTFetchAllOptions{Limit: 2})
+	records, err := client.FetchRecentTrafficRecords(context.Background(), 2)
 	if err != nil {
-		t.Fatalf("FetchAllTrafficRecords: %v", err)
+		t.Fatalf("FetchRecentTrafficRecords: %v", err)
 	}
-	if len(records) != 3 {
-		t.Fatalf("records length = %d, want 3", len(records))
+	if len(records) != 2 {
+		t.Fatalf("records length = %d, want 2", len(records))
 	}
-	if len(requestOffsets) != 2 || requestOffsets[0] != "0" || requestOffsets[1] != "2" {
-		t.Fatalf("request offsets = %#v, want 0 then 2", requestOffsets)
+	if requestCount != 1 {
+		t.Fatalf("request count = %d, want one bounded snapshot request", requestCount)
 	}
 }
 

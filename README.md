@@ -58,7 +58,7 @@ module and CLI; later we can package the matrix builder and solver separately.
 | Address/Geocode Service | Working | Reads address input and resolves lat/lon with Nominatim plus cache | `data/stops.json`, `data/geocode_cache.json` |
 | Baseline Matrix Service | Working | Builds the full N x N OSRM duration table for the stops | `data/matrix.json`, `data/matrix_cache.json` |
 | Edge Geometry Service (`pepsi`) | Working, demo-grade | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
-| DOT Traffic Fetcher | Working, demo-grade | Pulls NYC DOT Traffic Speeds rows from Socrata/SODA by matched `link_id` or paginated full feed | in-memory DOT traffic records; cache planned |
+| DOT Traffic Fetcher | Working, demo-grade | Pulls a bounded recent NYC DOT snapshot for geometry matching, then fetches current rows by matched `link_id` | in-memory DOT traffic records; cache planned |
 | Local Matching Service | Working, tuning needed | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | `data/edge_metadata_matched.json` |
 | Traffic Snapshot Builder | Working, demo-grade | Converts fixture or live DOT edge state into optional EMA-smoothed `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
 | Traffic Cache/EMA Persistence | Planned | Persists previous smoothed traffic values for future EMA updates | planned `data/traffic_cache.json` |
@@ -99,8 +99,25 @@ go run ./cmd/route-optimizer all \
   -matrix-out data/matrix.json
 ```
 
-The edge-metadata and live-DOT stages remain explicit advanced commands because
-they require many more live requests and matching configuration.
+Add `-dot-traffic` to run the traffic-aware stages in the same command:
+
+```bash
+go run ./cmd/route-optimizer all -dot-traffic examples/addresses.txt
+```
+
+That expands the pipeline to `geocode → matrix → edge-metadata →
+match-edges → traffic-aware itinerary`. It writes
+`data/edge_metadata.json` and `data/edge_metadata_matched.json` in addition to
+the baseline artifacts. This mode is slower and requires live OSRM and NYC DOT
+access: for `N` stops, edge metadata alone makes `N * (N - 1)` OSRM route
+requests.
+
+Current edge artifacts do not carry an ordered-stop fingerprint, OSRM source,
+or matching configuration. Therefore `all -dot-traffic` does not trust or scan
+an existing edge artifact. It warns, rebuilds it, and atomically replaces the
+old file only after the new artifact has been written successfully. Live DOT
+speed rows are always fetched fresh. Safe geometry/link-match caching can be
+added later once artifact provenance and a TTL are part of the format.
 
 ### Optional Traffic-Aware Flow
 
@@ -180,9 +197,12 @@ live cross-run smoothing requires the planned persistent traffic cache.
 
 The current matching flow avoids calling Socrata once per OSRM geometry point:
 
-1. `edge-metadata` fetches every directed OSRM route and writes a reusable
-   artifact. It does not maintain a separate automatic geometry cache.
-2. `match-edges` fetches DOT rows in pages, or reads a DOT fixture.
+1. `edge-metadata` fetches every directed OSRM route and writes an artifact.
+   Individual commands may reuse it explicitly; `all -dot-traffic` rebuilds it
+   because the current file cannot prove that it belongs to the new stop list.
+2. `match-edges` fetches one bounded, newest-first DOT snapshot (1,000 rows by
+   default), or reads a DOT fixture. The source is a very large append-only
+   historical feed, so the CLI deliberately does not scan every page.
 3. Parse DOT `link_points` locally.
 4. Compare DOT link points with each OSRM route polyline using configurable
    maximum and average distance thresholds.
@@ -193,7 +213,7 @@ The current matching flow avoids calling Socrata once per OSRM geometry point:
 In short:
 
 ```text
-OSRM geometry is persisted as an artifact and reused explicitly.
+OSRM geometry is persisted as an artifact and may be reused explicitly.
 DOT rows and previous EMA state are not yet persisted automatically.
 ```
 
@@ -202,7 +222,9 @@ automatic geometry/DOT caches are future tuning work rather than current
 behavior.
 
 With the default settings, an edge with no usable DOT match keeps multiplier
-`1.0`.
+`1.0`. The CLI prints a warning when no edges match, or when the latest DOT
+fetch produces no usable multipliers, so a baseline-only fallback is visible
+during a demo.
 
 ## CLI
 
@@ -214,8 +236,12 @@ errors instead of being interpreted as input paths.
 # All-stage demo: addresses -> stops -> matrix -> ranked round trips
 go run ./cmd/route-optimizer all examples/addresses.txt
 
+# Traffic-aware all-stage demo (rebuilds edge metadata and fetches live DOT)
+go run ./cmd/route-optimizer all -dot-traffic examples/addresses.txt
+
 # Top-level and command-specific help
 go run ./cmd/route-optimizer --help
+go run ./cmd/route-optimizer help all
 go run ./cmd/route-optimizer help itinerary
 go run ./cmd/route-optimizer itinerary --help
 
@@ -307,6 +333,8 @@ Working:
 
 - Geocode command with Nominatim cache.
 - Matrix command with OSRM table cache.
+- `all -dot-traffic` orchestration for geometry, DOT matching, live traffic
+  adjustment, solving, and Maps links in one run.
 - Edge metadata command with OSRM `/route` geometry artifacts.
 - Itinerary command with top-K solver and Google Maps links.
 - `ApplyTraffic` multiplier engine.

@@ -14,16 +14,49 @@ func SecondsToMinutes(seconds float64) float64 {
   return seconds / 60.0
 }
 
-// WriteJSON marshals v as indented JSON and writes it to path, creating parent dirs.
+// WriteJSON marshals v as indented JSON and atomically replaces path, creating
+// parent directories. Writing a sibling temporary file first keeps the last
+// successful artifact intact if marshaling or writing the replacement fails.
 func WriteJSON(path string, v interface{}) error {
   data, err := json.MarshalIndent(v, "", "  ")
   if err != nil {
     return err
   }
-  if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+  dir := filepath.Dir(path)
+  if err := os.MkdirAll(dir, 0755); err != nil {
     return err
   }
-  return os.WriteFile(path, data, 0644)
+
+  tempFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+  if err != nil {
+    return err
+  }
+  tempPath := tempFile.Name()
+  keepTemp := true
+  defer func() {
+    if keepTemp {
+      _ = tempFile.Close()
+      _ = os.Remove(tempPath)
+    }
+  }()
+
+  if err := tempFile.Chmod(0644); err != nil {
+    return err
+  }
+  if _, err := tempFile.Write(data); err != nil {
+    return err
+  }
+  if err := tempFile.Sync(); err != nil {
+    return err
+  }
+  if err := tempFile.Close(); err != nil {
+    return err
+  }
+  if err := os.Rename(tempPath, path); err != nil {
+    return err
+  }
+  keepTemp = false
+  return nil
 }
 
 // ReadJSON reads path and unmarshals JSON into dest.

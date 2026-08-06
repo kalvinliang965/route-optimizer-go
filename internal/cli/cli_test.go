@@ -126,6 +126,191 @@ output:
 	}
 }
 
+func TestRunAllCommandBuildsAndAppliesDOTTraffic(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	addressesPath := filepath.Join(tempDir, "demo-addresses.txt")
+	stopsPath := filepath.Join(tempDir, "artifacts", "stops.json")
+	matrixPath := filepath.Join(tempDir, "artifacts", "matrix.json")
+	edgeMetadataPath := filepath.Join(tempDir, "artifacts", "edge_metadata.json")
+	matchedEdgeMetadataPath := filepath.Join(tempDir, "artifacts", "edge_metadata_matched.json")
+	geocodeCachePath := filepath.Join(tempDir, "cache", "geocode.json")
+	matrixCachePath := filepath.Join(tempDir, "cache", "matrix.json")
+
+	config := fmt.Sprintf(`
+solver:
+  top_k: 1
+  max_stops: 5
+cache:
+  geocode_file: %q
+  matrix_file: %q
+http:
+  geocode_timeout_sec: 5
+  osrm_timeout_sec: 10
+  user_agent: "cli-all-dot-test"
+output:
+  duration_unit: minutes
+`, geocodeCachePath, matrixCachePath)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	addresses := []string{"Demo Depot", "Demo Stop"}
+	if err := os.WriteFile(addressesPath, []byte(strings.Join(addresses, "\n")), 0644); err != nil {
+		t.Fatalf("write addresses: %v", err)
+	}
+	stops := []route.Stop{
+		{Name: "Depot", Lat: 40.000000, Lon: -73.000000},
+		{Name: "Stop", Lat: 40.001000, Lon: -73.001000},
+	}
+	if err := route.WriteJSON(geocodeCachePath, route.GeocodeCache{
+		addresses[0]: stops[0],
+		addresses[1]: stops[1],
+	}); err != nil {
+		t.Fatalf("write geocode cache: %v", err)
+	}
+	matrixCache := route.MatrixCache{
+		"40.000000, -73.000000": {"40.001000, -73.001000": 60},
+		"40.001000, -73.001000": {"40.000000, -73.000000": 60},
+	}
+	if err := route.WriteJSON(matrixCachePath, matrixCache); err != nil {
+		t.Fatalf("write matrix cache: %v", err)
+	}
+
+	osrmRequestCount := 0
+	osrmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		osrmRequestCount++
+		if got := r.Header.Get("User-Agent"); got != "cli-all-dot-test" {
+			t.Errorf("OSRM User-Agent = %q, want cli-all-dot-test", got)
+		}
+		switch r.URL.Path {
+		case "/route/v1/driving/-73.000000,40.000000;-73.001000,40.001000":
+			_, _ = w.Write([]byte(cliOSRMRouteJSON(stops[0], stops[1], "forward")))
+		case "/route/v1/driving/-73.001000,40.001000;-73.000000,40.000000":
+			_, _ = w.Write([]byte(cliOSRMRouteJSON(stops[1], stops[0], "reverse")))
+		default:
+			t.Errorf("unexpected OSRM path: %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer osrmServer.Close()
+
+	recentDOTRequests := 0
+	filteredDOTRequests := 0
+	dotServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-App-Token"); got != "test-token" {
+			t.Errorf("DOT X-App-Token = %q, want test-token", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "cli-all-dot-test" {
+			t.Errorf("DOT User-Agent = %q, want cli-all-dot-test", got)
+		}
+		where := r.URL.Query().Get("$where")
+		if where == "" {
+			recentDOTRequests++
+			if got := r.URL.Query().Get("$limit"); got != "1000" {
+				t.Errorf("recent DOT $limit = %q, want 1000", got)
+			}
+			if got := r.URL.Query().Get("$select"); got != "link_id,data_as_of,link_points" {
+				t.Errorf("recent DOT $select = %q", got)
+			}
+			if got := r.URL.Query().Get("$order"); got != "data_as_of DESC,link_id ASC" {
+				t.Errorf("recent DOT $order = %q", got)
+			}
+		} else {
+			filteredDOTRequests++
+			if where != "link_id in('dot-demo')" {
+				t.Errorf("filtered DOT $where = %q", where)
+			}
+			if got := r.URL.Query().Get("$select"); got != "link_id,speed,data_as_of" {
+				t.Errorf("filtered DOT $select = %q", got)
+			}
+		}
+		_, _ = w.Write([]byte(`[
+			{"link_id":"dot-demo","speed":"5","data_as_of":"2026-08-05T12:00:00","link_points":"40.000100,-73.000100 40.000900,-73.000900"}
+		]`))
+	}))
+	defer dotServer.Close()
+
+	// Invalid existing files prove that all warns and rebuilds rather than
+	// trying to trust or scan stale edge metadata.
+	if err := os.MkdirAll(filepath.Dir(edgeMetadataPath), 0755); err != nil {
+		t.Fatalf("make artifacts directory: %v", err)
+	}
+	if err := os.WriteFile(edgeMetadataPath, []byte("stale raw metadata"), 0644); err != nil {
+		t.Fatalf("write stale edge metadata: %v", err)
+	}
+	if err := os.WriteFile(matchedEdgeMetadataPath, []byte("stale matched metadata"), 0644); err != nil {
+		t.Fatalf("write stale matched metadata: %v", err)
+	}
+
+	var output string
+	warnings := captureStderr(t, func() {
+		output = captureStdout(t, func() {
+			err := RunArgs([]string{
+				"all",
+				"-config", configPath,
+				"-stops-out", stopsPath,
+				"-matrix-out", matrixPath,
+				"-dot-traffic",
+				"-edge-metadata-out", edgeMetadataPath,
+				"-matched-edge-metadata-out", matchedEdgeMetadataPath,
+				"-osrm-base-url", osrmServer.URL,
+				"-dot-endpoint", dotServer.URL,
+				"-dot-app-token", "test-token",
+				addressesPath,
+			})
+			if err != nil {
+				t.Fatalf("RunArgs all -dot-traffic: %v", err)
+			}
+		})
+	})
+
+	if osrmRequestCount != 2 {
+		t.Fatalf("OSRM request count = %d, want 2", osrmRequestCount)
+	}
+	if recentDOTRequests != 1 || filteredDOTRequests != 1 {
+		t.Fatalf("DOT requests = recent %d, filtered %d; want 1 and 1", recentDOTRequests, filteredDOTRequests)
+	}
+	for _, want := range []string{
+		"all: geocode → matrix → edge-metadata → match-edges → traffic-aware itinerary",
+		"edge-metadata: wrote " + edgeMetadataPath,
+		"match-edges: matched 2/2 edges",
+		"itinerary: applied DOT traffic",
+		"(2 edge multipliers; current snapshot, no persisted EMA history)",
+		"all: complete",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("traffic all output missing %q:\n%s", want, output)
+		}
+	}
+	for _, path := range []string{edgeMetadataPath, matchedEdgeMetadataPath} {
+		if !strings.Contains(warnings, path+" already exists; rebuilding and replacing it after the stage succeeds") {
+			t.Fatalf("warnings missing replacement warning for %s:\n%s", path, warnings)
+		}
+	}
+
+	rawMetadata, err := pepsi.ReadEdgeMetadata(edgeMetadataPath)
+	if err != nil {
+		t.Fatalf("read rebuilt edge metadata: %v", err)
+	}
+	if len(rawMetadata.Edges) != 2 {
+		t.Fatalf("raw edge count = %d, want 2", len(rawMetadata.Edges))
+	}
+	matchedMetadata, err := pepsi.ReadEdgeMetadata(matchedEdgeMetadataPath)
+	if err != nil {
+		t.Fatalf("read rebuilt matched edge metadata: %v", err)
+	}
+	if len(matchedMetadata.Edges) != 2 {
+		t.Fatalf("matched edge count = %d, want 2", len(matchedMetadata.Edges))
+	}
+	for _, edge := range matchedMetadata.Edges {
+		if len(edge.MatchedDOTLinkIDs) != 1 || edge.MatchedDOTLinkIDs[0] != "dot-demo" {
+			t.Fatalf("edge %d -> %d matched IDs = %#v, want dot-demo",
+				edge.FromStop, edge.ToStop, edge.MatchedDOTLinkIDs)
+		}
+	}
+}
+
 func TestRunArgsRejectsTwoAllAddressInputs(t *testing.T) {
 	err := RunArgs([]string{"all", "-addresses", "first.txt", "second.txt"})
 	if err == nil || !strings.Contains(err.Error(), "both positionally") {
@@ -151,7 +336,7 @@ func TestRunArgsTopLevelHelp(t *testing.T) {
 					t.Fatalf("RunArgs(%v): %v", tt.args, err)
 				}
 			})
-			for _, want := range []string{"Usage:", "route-optimizer all", "route-optimizer help [command]"} {
+			for _, want := range []string{"Usage:", "route-optimizer all", "route-optimizer all -dot-traffic", "route-optimizer help [command]"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("help output missing %q:\n%s", want, output)
 				}
@@ -184,12 +369,12 @@ func TestRunArgsCommandHelp(t *testing.T) {
 		{
 			name:  "all help topic",
 			args:  []string{"help", "all"},
-			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out"},
+			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out", "-dot-traffic", "-dot-match-limit", "-edge-metadata-out"},
 		},
 		{
 			name:  "all help flag",
 			args:  []string{"all", "--help"},
-			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out"},
+			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out", "-dot-traffic", "-matched-edge-metadata-out"},
 		},
 	}
 

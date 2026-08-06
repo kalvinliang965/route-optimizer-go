@@ -18,9 +18,10 @@ const (
 	DefaultDOTTrafficEndpoint = "https://data.cityofnewyork.us/resource/i4gi-tjb9.json"
 	DefaultDOTChunkSize       = 40
 	DefaultDOTLimitPerLink    = 3
-	DefaultDOTPageLimit       = 5000
+	DefaultDOTMatchLimit      = 1000
 
-	dotTrafficSelectFields = "link_id,speed,travel_time,status,data_as_of,link_name,borough,link_points,encoded_poly_line"
+	dotSpeedSelectFields = "link_id,speed,data_as_of"
+	dotMatchSelectFields = "link_id,data_as_of,link_points"
 )
 
 type DOTClient struct {
@@ -30,11 +31,6 @@ type DOTClient struct {
 	HTTPClient   *http.Client
 	ChunkSize    int
 	LimitPerLink int
-}
-
-type DOTFetchAllOptions struct {
-	Limit    int
-	MaxPages int
 }
 
 type DOTTrafficRecord struct {
@@ -154,7 +150,7 @@ func (c DOTClient) FetchTrafficRecords(ctx context.Context, linkIDs []string) ([
 
 func (c DOTClient) fetchTrafficRecordChunk(ctx context.Context, linkIDs []string) ([]DOTTrafficRecord, error) {
 	q := url.Values{}
-	q.Set("$select", dotTrafficSelectFields)
+	q.Set("$select", dotSpeedSelectFields)
 	q.Set("$where", fmt.Sprintf("link_id in(%s)", soqlStringList(linkIDs)))
 	q.Set("$order", "data_as_of DESC")
 	q.Set("$limit", strconv.Itoa(len(linkIDs)*c.limitPerLink()))
@@ -162,35 +158,18 @@ func (c DOTClient) fetchTrafficRecordChunk(ctx context.Context, linkIDs []string
 	return c.fetchTrafficRecordsWithQuery(ctx, q)
 }
 
-func (c DOTClient) FetchAllTrafficRecords(ctx context.Context, opts DOTFetchAllOptions) ([]DOTTrafficRecord, error) {
-	limit := opts.Limit
+// FetchRecentTrafficRecords returns one bounded, newest-first window for local
+// link-geometry matching. The NYC DOT source is an append-only historical feed,
+// so attempting to paginate all rows is neither necessary nor practical.
+func (c DOTClient) FetchRecentTrafficRecords(ctx context.Context, limit int) ([]DOTTrafficRecord, error) {
 	if limit <= 0 {
-		limit = DefaultDOTPageLimit
+		limit = DefaultDOTMatchLimit
 	}
 
-	var records []DOTTrafficRecord
-	for page := 0; ; page++ {
-		if opts.MaxPages > 0 && page >= opts.MaxPages {
-			break
-		}
-		pageRecords, err := c.fetchTrafficRecordPage(ctx, limit, page*limit)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, pageRecords...)
-		if len(pageRecords) < limit {
-			break
-		}
-	}
-	return records, nil
-}
-
-func (c DOTClient) fetchTrafficRecordPage(ctx context.Context, limit, offset int) ([]DOTTrafficRecord, error) {
 	q := url.Values{}
-	q.Set("$select", dotTrafficSelectFields)
-	q.Set("$order", "link_id ASC,data_as_of DESC")
+	q.Set("$select", dotMatchSelectFields)
+	q.Set("$order", "data_as_of DESC,link_id ASC")
 	q.Set("$limit", strconv.Itoa(limit))
-	q.Set("$offset", strconv.Itoa(offset))
 
 	return c.fetchTrafficRecordsWithQuery(ctx, q)
 }

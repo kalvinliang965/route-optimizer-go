@@ -20,6 +20,9 @@ func TestLoadConfig_ExampleFile(t *testing.T) {
 	if cfg.Cache.GeocodeFile != "data/geocode_cache.json" {
 		t.Errorf("GeocodeFile = %q", cfg.Cache.GeocodeFile)
 	}
+	if cfg.HTTP.DOTTimeoutSec != 30 {
+		t.Errorf("DOTTimeoutSec = %d; want 30", cfg.HTTP.DOTTimeoutSec)
+	}
 	if cfg.Output.DurationUnit != "minutes" {
 		t.Errorf("DurationUnit = %q; want minutes", cfg.Output.DurationUnit)
 	}
@@ -34,6 +37,18 @@ func TestLoadConfig_ValidateTopK(t *testing.T) {
 	_, err := LoadConfig(path)
 	if err == nil {
 		t.Fatal("expected validation error for top_k=0")
+	}
+}
+
+func TestLoadConfig_ValidateDOTTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad-dot-timeout.yaml")
+	if err := os.WriteFile(path, []byte("http:\n  dot_timeout_sec: 0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected validation error for dot_timeout_sec=0")
 	}
 }
 

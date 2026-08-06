@@ -179,8 +179,8 @@ Important implementation notes:
 
 Do not query Socrata once per OSRM intermediate point. Instead:
 
-1. Fetch DOT traffic rows separately, either from a fixture or the paginated
-   Socrata feed.
+1. Fetch DOT traffic rows separately, either from a fixture or one bounded,
+   newest-first window of the append-only Socrata feed.
 2. Parse DOT `link_points` into local coordinate polylines.
 3. Compare each DOT link polyline to nearby OSRM route geometry locally.
 4. Keep links whose DOT points are within conservative distance thresholds.
@@ -239,8 +239,8 @@ This package is not complete yet, but the edge artifact builder is in place:
   multipliers against OSRM baseline speed.
 - `MatchDOTLinks` parses DOT `link_points` and enriches edges with local
   `matched_dot_link_ids`.
-- `DOTClient.FetchAllTrafficRecords` can fetch the paginated DOT feed for local
-  matching candidates.
+- `DOTClient.FetchRecentTrafficRecords` fetches a bounded recent DOT window for
+  local matching candidates without scanning the historical feed.
 - The `match-edges` command can write enriched edge metadata from a DOT fixture
   or live Socrata rows.
 - The `itinerary` command can apply the fixture-backed traffic overlay with

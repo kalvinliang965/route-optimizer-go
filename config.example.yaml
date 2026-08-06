@@ -1,6 +1,7 @@
 # Route optimizer configuration (example)
 # Usage: go run ./cmd/route-optimizer all -config config.yaml
 #        go run ./cmd/route-optimizer all -config config.yaml path/to/addresses.txt
+#        go run ./cmd/route-optimizer all -dot-traffic -config config.yaml path/to/addresses.txt
 #        # The second form supplies an addresses file positionally.
 # Address list can stay in a separate file, or be listed under input.addresses.
 
@@ -27,6 +28,8 @@ http:
   # Nominatim asks for ~1 req/s; keep timeouts modest.
   geocode_timeout_sec: 5
   osrm_timeout_sec: 10
+  # DOT snapshot matching is a larger request than an OSRM route lookup.
+  dot_timeout_sec: 30
   user_agent: "GoRouteOptimizerApp/1.0 (student project)"
 
 output:
