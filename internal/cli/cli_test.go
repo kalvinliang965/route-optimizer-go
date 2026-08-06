@@ -14,7 +14,7 @@ import (
 	"route-optimizer-go/pepsi"
 )
 
-func TestRunArgsWithoutCommandRunsOneShotPipeline(t *testing.T) {
+func TestRunAllCommandRunsPipeline(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 	addressesPath := filepath.Join(tempDir, "demo-addresses.txt")
@@ -33,7 +33,7 @@ cache:
 http:
   geocode_timeout_sec: 5
   osrm_timeout_sec: 10
-  user_agent: "cli-one-shot-test"
+  user_agent: "cli-all-test"
 output:
   duration_unit: minutes
 `, geocodeCachePath, matrixCachePath)
@@ -83,28 +83,29 @@ output:
 
 	output := captureStdout(t, func() {
 		err := RunArgs([]string{
+			"all",
 			"-config", configPath,
 			"-stops-out", stopsPath,
 			"-matrix-out", matrixPath,
 			addressesPath,
 		})
 		if err != nil {
-			t.Fatalf("RunArgs one-shot: %v", err)
+			t.Fatalf("RunArgs all: %v", err)
 		}
 	})
 
 	for _, want := range []string{
-		"one-shot: geocode → matrix → itinerary",
+		"all: geocode → matrix → itinerary",
 		"geocode: wrote " + stopsPath,
 		"matrix: wrote " + matrixPath,
 		"itinerary: solving top 2",
 		"1. Depot",
 		"2. Stop A",
 		"3. Stop B",
-		"one-shot: complete",
+		"all: complete",
 	} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("one-shot output missing %q:\n%s", want, output)
+			t.Fatalf("all output missing %q:\n%s", want, output)
 		}
 	}
 
@@ -125,10 +126,137 @@ output:
 	}
 }
 
-func TestRunArgsRejectsTwoOneShotAddressInputs(t *testing.T) {
-	err := RunArgs([]string{"-addresses", "first.txt", "second.txt"})
+func TestRunArgsRejectsTwoAllAddressInputs(t *testing.T) {
+	err := RunArgs([]string{"all", "-addresses", "first.txt", "second.txt"})
 	if err == nil || !strings.Contains(err.Error(), "both positionally") {
 		t.Fatalf("RunArgs error = %v, want duplicate addresses input error", err)
+	}
+}
+
+func TestRunArgsTopLevelHelp(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "no arguments"},
+		{name: "short flag", args: []string{"-h"}},
+		{name: "long flag", args: []string{"--help"}},
+		{name: "help command", args: []string{"help"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := RunArgs(tt.args); err != nil {
+					t.Fatalf("RunArgs(%v): %v", tt.args, err)
+				}
+			})
+			for _, want := range []string{"Usage:", "route-optimizer all", "route-optimizer help [command]"} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("help output missing %q:\n%s", want, output)
+				}
+			}
+		})
+	}
+}
+
+func TestRunArgsCommandHelp(t *testing.T) {
+	tests := []struct {
+		name  string
+		args  []string
+		wants []string
+	}{
+		{
+			name:  "help topic",
+			args:  []string{"help", "itinerary"},
+			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
+		},
+		{
+			name:  "long command flag",
+			args:  []string{"itinerary", "--help"},
+			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
+		},
+		{
+			name:  "short command flag",
+			args:  []string{"itinerary", "-h"},
+			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
+		},
+		{
+			name:  "all help topic",
+			args:  []string{"help", "all"},
+			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out"},
+		},
+		{
+			name:  "all help flag",
+			args:  []string{"all", "--help"},
+			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := RunArgs(tt.args); err != nil {
+					t.Fatalf("RunArgs(%v): %v", tt.args, err)
+				}
+			})
+			for _, want := range tt.wants {
+				if !strings.Contains(output, want) {
+					t.Fatalf("command help for %v missing %q:\n%s", tt.args, want, output)
+				}
+			}
+		})
+	}
+}
+
+func TestRunArgsUnknownCommandReturnsError(t *testing.T) {
+	for _, command := range []string{"itineray", "examples/addresses.txt"} {
+		t.Run(command, func(t *testing.T) {
+			var gotErr error
+			output := captureStderr(t, func() {
+				gotErr = RunArgs([]string{command})
+			})
+			if gotErr == nil || !strings.Contains(gotErr.Error(), "unknown command") {
+				t.Fatalf("RunArgs error = %v, want unknown command error", gotErr)
+			}
+			if !strings.Contains(output, "Usage:") {
+				t.Fatalf("stderr missing usage after unknown command:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestRunArgsBadFlagReturnsHelpfulError(t *testing.T) {
+	for _, command := range []string{"all", "matrix"} {
+		err := RunArgs([]string{command, "--definitely-invalid"})
+		if err == nil {
+			t.Fatalf("RunArgs returned nil for an invalid %s flag", command)
+		}
+		for _, want := range []string{"parse " + command + " flags", "help " + command} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("invalid flag error missing %q: %v", want, err)
+			}
+		}
+	}
+}
+
+func TestRunArgsRejectsUnexpectedCommandPositionals(t *testing.T) {
+	err := RunArgs([]string{"matrix", "unexpected.json"})
+	if err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
+		t.Fatalf("RunArgs error = %v, want unexpected positional argument error", err)
+	}
+}
+
+func TestRunArgsRejectsUnknownHelpTopic(t *testing.T) {
+	var gotErr error
+	output := captureStderr(t, func() {
+		gotErr = RunArgs([]string{"help", "solve-everything"})
+	})
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "unknown help topic") {
+		t.Fatalf("RunArgs error = %v, want unknown help topic error", gotErr)
+	}
+	if !strings.Contains(output, "Usage:") {
+		t.Fatalf("stderr missing usage after unknown help topic:\n%s", output)
 	}
 }
 
@@ -522,6 +650,31 @@ func captureStdout(t *testing.T, fn func()) string {
 	output, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("read stdout: %v", err)
+	}
+	return string(output)
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	original := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = writer
+	defer func() {
+		os.Stderr = original
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
 	}
 	return string(output)
 }

@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -12,56 +14,84 @@ import (
 	"route-optimizer-go/pepsi"
 )
 
-// Execute parses os.Args and runs either a selected subcommand or the complete
-// demo pipeline when no subcommand is present.
+// Execute parses os.Args and runs the selected command.
 func Execute() error {
 	return RunArgs(os.Args[1:])
 }
 
-// RunArgs dispatches a subcommand when the first argument names one. Otherwise
-// it treats the arguments as one-shot demo flags and runs geocode, matrix, and
-// itinerary in sequence.
+// RunArgs handles top-level help and dispatches an explicit command.
 func RunArgs(args []string) error {
-	if len(args) > 0 && isCommand(args[0]) {
-		return Run(args[0], args[1:])
+	if len(args) == 0 {
+		printUsage(os.Stdout)
+		return nil
 	}
-	return runAll(args)
+
+	switch args[0] {
+	case "-h", "--help":
+		if len(args) != 1 {
+			return fmt.Errorf("%s does not accept additional arguments", args[0])
+		}
+		printUsage(os.Stdout)
+		return nil
+	case "help":
+		return runHelp(args[1:])
+	}
+
+	if !isCommand(args[0]) {
+		printUsage(os.Stderr)
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+	return Run(args[0], args[1:])
 }
 
 func isCommand(value string) bool {
 	switch value {
-	case "geocode", "matrix", "edge-metadata", "match-edges", "itinerary":
+	case "all", "geocode", "matrix", "edge-metadata", "match-edges", "itinerary":
 		return true
 	default:
 		return false
 	}
 }
 
-// Usage prints top-level CLI help to stderr.
+func runHelp(args []string) error {
+	if len(args) == 0 {
+		printUsage(os.Stdout)
+		return nil
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("help accepts at most one command, got %d", len(args))
+	}
+	if !isCommand(args[0]) {
+		printUsage(os.Stderr)
+		return fmt.Errorf("unknown help topic %q", args[0])
+	}
+	return Run(args[0], []string{"--help"})
+}
+
+// Usage prints top-level CLI help to stderr for callers reporting an error.
 func Usage() {
-	fmt.Fprintf(os.Stderr, `Usage:
-  route-optimizer [one-shot flags] [addresses-file]
+	printUsage(os.Stderr)
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprint(w, `Usage:
+  route-optimizer all [flags] [addresses-file]
   route-optimizer <command> [flags]
+  route-optimizer help [command]
 
-With no command, runs the demo pipeline in one go:
-  addresses → geocode → matrix → itinerary
-
-One-shot flags:
-  -config      YAML config (default: config.yaml, then config.example.yaml)
-  -addresses   newline-separated addresses file (or pass it positionally)
-  -stops-out   geocoded stops artifact (default: data/stops.json)
-  -matrix-out  duration matrix artifact (default: data/matrix.json)
+Run with no arguments to show this help.
 
 Commands:
-  geocode     -addresses addresses.txt  →  -out stops.json (lat/lon + display name)
-  matrix      -stops stops.json         →  -out matrix.json (OSRM durations)
-  edge-metadata -stops stops.json       →  -out edge_metadata.json (OSRM route geometry)
-  match-edges -edge-metadata edge_metadata.json → enriched edge metadata with DOT link IDs
-  itinerary   -stops stops.json -matrix matrix.json → top-K routes + Maps links
+  all            Run geocode → matrix → itinerary
+  geocode        Resolve addresses into stops
+  matrix         Build the baseline OSRM duration matrix
+  edge-metadata  Build directed OSRM route geometry
+  match-edges    Match route geometry to NYC DOT link IDs
+  itinerary      Solve top-K round trips and print Maps links
 
 Examples:
-  route-optimizer addresses.txt
-  route-optimizer -config config.yaml -addresses addresses.txt
+  route-optimizer all examples/addresses.txt
+  route-optimizer all -config config.yaml -addresses addresses.txt
   route-optimizer geocode -addresses addresses.txt -out data/stops.json
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
   route-optimizer edge-metadata -stops data/stops.json -out data/edge_metadata.json
@@ -71,24 +101,55 @@ Examples:
   route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json -edge-metadata data/edge_metadata.json -dot-traffic
   route-optimizer itinerary -stops data/stops.json -refresh-matrix
 
-Run 'route-optimizer <command> -h' for command-specific flags.
+Help:
+  route-optimizer help
+  route-optimizer help itinerary
+  route-optimizer itinerary --help
 `)
+}
+
+func newCommandFlagSet(name, invocation, summary string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage:\n  route-optimizer %s\n\n%s\n\nFlags:\n", invocation, summary)
+		fs.PrintDefaults()
+	}
+	return fs
+}
+
+func parseCommandFlags(fs *flag.FlagSet, args []string) error {
+	err := fs.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		fs.SetOutput(os.Stdout)
+		fs.Usage()
+		return flag.ErrHelp
+	}
+	if err != nil {
+		return fmt.Errorf("parse %s flags: %w (run 'route-optimizer help %s')", fs.Name(), err, fs.Name())
+	}
+	return nil
+}
+
+func rejectPositionalArgs(fs *flag.FlagSet) error {
+	if fs.NArg() == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s does not accept positional arguments %q; use flags instead (run 'route-optimizer help %s')",
+		fs.Name(), fs.Args(), fs.Name())
 }
 
 // runAll executes the stable, dependency-light demo path. The traffic-aware
 // edge metadata and DOT matching stages remain explicit because they require
 // substantially more live requests and optional Socrata configuration.
 func runAll(args []string) error {
-	fs := flag.NewFlagSet("route-optimizer", flag.ContinueOnError)
+	fs := newCommandFlagSet("all", "all [flags] [addresses-file]", "Run geocode, matrix, and itinerary in sequence.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	addressesPath := fs.String("addresses", "", "newline-separated addresses file")
 	stopsPath := fs.String("stops-out", "data/stops.json", "output stops JSON")
 	matrixPath := fs.String("matrix-out", "data/matrix.json", "output duration matrix JSON")
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return fmt.Errorf("parse one-shot flags: %w", err)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
 	}
 
 	positional := fs.Args()
@@ -101,11 +162,11 @@ func runAll(args []string) error {
 		}
 		*addressesPath = positional[0]
 	}
-	selectedConfigPath := oneShotConfigPath(*configPath)
+	selectedConfigPath := allConfigPath(*configPath)
 
-	fmt.Printf("one-shot: geocode → matrix → itinerary\n")
+	fmt.Printf("all: geocode → matrix → itinerary\n")
 	if selectedConfigPath != *configPath {
-		fmt.Printf("one-shot: %s not found; using %s\n", *configPath, selectedConfigPath)
+		fmt.Printf("all: %s not found; using %s\n", *configPath, selectedConfigPath)
 	}
 
 	geocodeArgs := []string{
@@ -116,28 +177,28 @@ func runAll(args []string) error {
 		geocodeArgs = append(geocodeArgs, "-addresses", *addressesPath)
 	}
 	if err := runGeocode(geocodeArgs); err != nil {
-		return fmt.Errorf("one-shot geocode: %w", err)
+		return fmt.Errorf("all geocode: %w", err)
 	}
 	if err := runMatrix([]string{
 		"-config", selectedConfigPath,
 		"-stops", *stopsPath,
 		"-out", *matrixPath,
 	}); err != nil {
-		return fmt.Errorf("one-shot matrix: %w", err)
+		return fmt.Errorf("all matrix: %w", err)
 	}
 	if err := runItinerary([]string{
 		"-config", selectedConfigPath,
 		"-stops", *stopsPath,
 		"-matrix", *matrixPath,
 	}); err != nil {
-		return fmt.Errorf("one-shot itinerary: %w", err)
+		return fmt.Errorf("all itinerary: %w", err)
 	}
 
-	fmt.Printf("one-shot: complete; artifacts written to %s and %s\n", *stopsPath, *matrixPath)
+	fmt.Printf("all: complete; artifacts written to %s and %s\n", *stopsPath, *matrixPath)
 	return nil
 }
 
-func oneShotConfigPath(path string) string {
+func allConfigPath(path string) string {
 	if path != "config.yaml" {
 		return path
 	}
@@ -153,30 +214,42 @@ func oneShotConfigPath(path string) string {
 
 // Run dispatches a subcommand with its flag args.
 func Run(command string, args []string) error {
+	var err error
 	switch command {
+	case "all":
+		err = runAll(args)
 	case "geocode":
-		return runGeocode(args)
+		err = runGeocode(args)
 	case "matrix":
-		return runMatrix(args)
+		err = runMatrix(args)
 	case "edge-metadata":
-		return runEdgeMetadata(args)
+		err = runEdgeMetadata(args)
 	case "match-edges":
-		return runMatchEdges(args)
+		err = runMatchEdges(args)
 	case "itinerary":
-		return runItinerary(args)
+		err = runItinerary(args)
 	default:
 		Usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
 }
 
 func runEdgeMetadata(args []string) error {
-	fs := flag.NewFlagSet("edge-metadata", flag.ExitOnError)
+	fs := newCommandFlagSet("edge-metadata", "edge-metadata [flags]", "Build directed OSRM route geometry metadata for a stops artifact.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
 	outPath := fs.String("out", "data/edge_metadata.json", "output edge metadata JSON")
 	osrmBaseURL := fs.String("osrm-base-url", pepsi.DefaultOSRMRouteBaseURL, "OSRM route service base URL")
-	fs.Parse(args)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectPositionalArgs(fs); err != nil {
+		return err
+	}
 
 	cfg, err := route.LoadConfig(*configPath)
 	if err != nil {
@@ -215,7 +288,7 @@ func runEdgeMetadata(args []string) error {
 }
 
 func runMatchEdges(args []string) error {
-	fs := flag.NewFlagSet("match-edges", flag.ExitOnError)
+	fs := newCommandFlagSet("match-edges", "match-edges [flags]", "Match OSRM edge geometry to NYC DOT traffic link IDs.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	edgeMetadataPath := fs.String("edge-metadata", "data/edge_metadata.json", "edge metadata JSON from edge-metadata")
 	outPath := fs.String("out", "data/edge_metadata_matched.json", "output enriched edge metadata JSON")
@@ -228,7 +301,12 @@ func runMatchEdges(args []string) error {
 	matchMaxAverageDistance := fs.Float64("match-max-average-distance-m", pepsi.DefaultMatchMaxAverageDistanceM, "maximum average distance from DOT link points to an OSRM edge")
 	matchMaxLinksPerEdge := fs.Int("match-max-links-per-edge", 0, "maximum matched DOT links per edge; 0 means no limit")
 	preserveExisting := fs.Bool("preserve-existing", false, "preserve existing matched_dot_link_ids and append new matches")
-	fs.Parse(args)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectPositionalArgs(fs); err != nil {
+		return err
+	}
 
 	cfg, err := route.LoadConfig(*configPath)
 	if err != nil {
@@ -286,7 +364,7 @@ func runMatchEdges(args []string) error {
 }
 
 func runItinerary(args []string) error {
-	fs := flag.NewFlagSet("itinerary", flag.ExitOnError)
+	fs := newCommandFlagSet("itinerary", "itinerary [flags]", "Solve and print the top-K round trips, optionally with a traffic overlay.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
 	matrixPath := fs.String("matrix", "data/matrix.json", "duration matrix JSON from matrix")
@@ -302,7 +380,12 @@ func runItinerary(args []string) error {
 	trafficEMAAlpha := fs.Float64("traffic-ema-alpha", 0.3, "EMA alpha for current vs previous traffic multiplier")
 	trafficMinMultiplier := fs.Float64("traffic-min-multiplier", 0.5, "minimum traffic multiplier clamp")
 	trafficMaxMultiplier := fs.Float64("traffic-max-multiplier", 3.0, "maximum traffic multiplier clamp")
-	fs.Parse(args)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectPositionalArgs(fs); err != nil {
+		return err
+	}
 
 	if *edgeStateFixturePath != "" && *dotTraffic {
 		return fmt.Errorf("choose either -edge-state-fixture or -dot-traffic, not both")
@@ -405,11 +488,16 @@ func runItinerary(args []string) error {
 }
 
 func runMatrix(args []string) error {
-	fs := flag.NewFlagSet("matrix", flag.ExitOnError)
+	fs := newCommandFlagSet("matrix", "matrix [flags]", "Build an OSRM baseline duration matrix for geocoded stops.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	stopsPath := fs.String("stops", "data/stops.json", "stops JSON from geocode")
 	outPath := fs.String("out", "data/matrix.json", "output duration matrix JSON")
-	fs.Parse(args)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectPositionalArgs(fs); err != nil {
+		return err
+	}
 
 	cfg, err := route.LoadConfig(*configPath)
 	if err != nil {
@@ -444,11 +532,16 @@ func runMatrix(args []string) error {
 }
 
 func runGeocode(args []string) error {
-	fs := flag.NewFlagSet("geocode", flag.ExitOnError)
+	fs := newCommandFlagSet("geocode", "geocode [flags]", "Resolve an addresses file into an ordered stops artifact.")
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
 	addressesPath := fs.String("addresses", "", "newline-separated addresses file (defaults to config input)")
 	outPath := fs.String("out", "data/stops.json", "output stops file")
-	fs.Parse(args)
+	if err := parseCommandFlags(fs, args); err != nil {
+		return err
+	}
+	if err := rejectPositionalArgs(fs); err != nil {
+		return err
+	}
 
 	cfg, err := route.LoadConfig(*configPath)
 	if err != nil {

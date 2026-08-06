@@ -80,10 +80,10 @@ addresses.txt
   -> Google Maps links
 ```
 
-Run that entire flow with no subcommand by handing the CLI an addresses file:
+Run that entire flow explicitly with the `all` command:
 
 ```bash
-go run ./cmd/route-optimizer examples/addresses.txt
+go run ./cmd/route-optimizer all examples/addresses.txt
 ```
 
 This writes `data/stops.json` and `data/matrix.json`, then immediately prints
@@ -92,7 +92,7 @@ to the tracked `config.example.yaml`. The input can also be passed as a flag,
 and artifact paths can be overridden when a clean demo directory is useful:
 
 ```bash
-go run ./cmd/route-optimizer \
+go run ./cmd/route-optimizer all \
   -config config.yaml \
   -addresses addresses.txt \
   -stops-out data/stops.json \
@@ -206,11 +206,18 @@ With the default settings, an edge with no usable DOT match keeps multiplier
 
 ## CLI
 
-The current CLI uses stdlib `flag` with manual subcommand dispatch.
+The current CLI uses stdlib `flag` with explicit subcommand dispatch. Running
+it without arguments prints top-level help; unknown commands and flags return
+errors instead of being interpreted as input paths.
 
 ```bash
-# One-shot demo: addresses -> stops -> matrix -> ranked round trips
-go run ./cmd/route-optimizer examples/addresses.txt
+# All-stage demo: addresses -> stops -> matrix -> ranked round trips
+go run ./cmd/route-optimizer all examples/addresses.txt
+
+# Top-level and command-specific help
+go run ./cmd/route-optimizer --help
+go run ./cmd/route-optimizer help itinerary
+go run ./cmd/route-optimizer itinerary --help
 
 # Or run individual stages:
 
