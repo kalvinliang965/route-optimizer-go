@@ -1,6 +1,7 @@
 # Route optimizer configuration (example)
-# Usage: go run . -config config.yaml
-#        go run . -config config.yaml path/to/addresses.txt   # overrides input.addresses_file
+# Usage: go run ./cmd/route-optimizer -config config.yaml
+#        go run ./cmd/route-optimizer -config config.yaml path/to/addresses.txt
+#        # The second form runs geocode, matrix, and itinerary in one go.
 # Address list can stay in a separate file, or be listed under input.addresses.
 
 solver:

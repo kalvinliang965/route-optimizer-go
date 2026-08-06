@@ -14,6 +14,124 @@ import (
 	"route-optimizer-go/pepsi"
 )
 
+func TestRunArgsWithoutCommandRunsOneShotPipeline(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+	addressesPath := filepath.Join(tempDir, "demo-addresses.txt")
+	stopsPath := filepath.Join(tempDir, "artifacts", "stops.json")
+	matrixPath := filepath.Join(tempDir, "artifacts", "matrix.json")
+	geocodeCachePath := filepath.Join(tempDir, "cache", "geocode.json")
+	matrixCachePath := filepath.Join(tempDir, "cache", "matrix.json")
+
+	config := fmt.Sprintf(`
+solver:
+  top_k: 2
+  max_stops: 5
+cache:
+  geocode_file: %q
+  matrix_file: %q
+http:
+  geocode_timeout_sec: 5
+  osrm_timeout_sec: 10
+  user_agent: "cli-one-shot-test"
+output:
+  duration_unit: minutes
+`, geocodeCachePath, matrixCachePath)
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	addresses := []string{"Demo Depot", "Demo Stop A", "Demo Stop B"}
+	if err := os.WriteFile(addressesPath, []byte(strings.Join(addresses, "\n")), 0644); err != nil {
+		t.Fatalf("write addresses: %v", err)
+	}
+
+	stops := []route.Stop{
+		{Name: "Depot", Lat: 40.700001, Lon: -73.900001},
+		{Name: "Stop A", Lat: 40.710001, Lon: -73.910001},
+		{Name: "Stop B", Lat: 40.720001, Lon: -73.920001},
+	}
+	geocodeCache := route.GeocodeCache{
+		addresses[0]: stops[0],
+		addresses[1]: stops[1],
+		addresses[2]: stops[2],
+	}
+	if err := route.WriteJSON(geocodeCachePath, geocodeCache); err != nil {
+		t.Fatalf("write geocode cache: %v", err)
+	}
+
+	durations := [][]float64{
+		{0, 1, 8},
+		{5, 0, 1},
+		{5, 4, 0},
+	}
+	matrixCache := make(route.MatrixCache)
+	for i, from := range stops {
+		fromKey := fmt.Sprintf("%.6f, %.6f", from.Lat, from.Lon)
+		matrixCache[fromKey] = make(map[string]float64)
+		for j, to := range stops {
+			if i == j {
+				continue
+			}
+			toKey := fmt.Sprintf("%.6f, %.6f", to.Lat, to.Lon)
+			matrixCache[fromKey][toKey] = durations[i][j]
+		}
+	}
+	if err := route.WriteJSON(matrixCachePath, matrixCache); err != nil {
+		t.Fatalf("write matrix cache: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		err := RunArgs([]string{
+			"-config", configPath,
+			"-stops-out", stopsPath,
+			"-matrix-out", matrixPath,
+			addressesPath,
+		})
+		if err != nil {
+			t.Fatalf("RunArgs one-shot: %v", err)
+		}
+	})
+
+	for _, want := range []string{
+		"one-shot: geocode → matrix → itinerary",
+		"geocode: wrote " + stopsPath,
+		"matrix: wrote " + matrixPath,
+		"itinerary: solving top 2",
+		"1. Depot",
+		"2. Stop A",
+		"3. Stop B",
+		"one-shot: complete",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("one-shot output missing %q:\n%s", want, output)
+		}
+	}
+
+	var gotStops []route.Stop
+	if err := route.ReadJSON(stopsPath, &gotStops); err != nil {
+		t.Fatalf("read stops artifact: %v", err)
+	}
+	if len(gotStops) != len(stops) {
+		t.Fatalf("stops artifact length = %d, want %d", len(gotStops), len(stops))
+	}
+
+	var gotMatrix [][]float64
+	if err := route.ReadJSON(matrixPath, &gotMatrix); err != nil {
+		t.Fatalf("read matrix artifact: %v", err)
+	}
+	if len(gotMatrix) != len(durations) || gotMatrix[0][1] != durations[0][1] {
+		t.Fatalf("matrix artifact = %#v, want %#v", gotMatrix, durations)
+	}
+}
+
+func TestRunArgsRejectsTwoOneShotAddressInputs(t *testing.T) {
+	err := RunArgs([]string{"-addresses", "first.txt", "second.txt"})
+	if err == nil || !strings.Contains(err.Error(), "both positionally") {
+		t.Fatalf("RunArgs error = %v, want duplicate addresses input error", err)
+	}
+}
+
 func TestRunItineraryAppliesEdgeStateFixture(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")

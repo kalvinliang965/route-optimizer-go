@@ -12,19 +12,45 @@ import (
 	"route-optimizer-go/pepsi"
 )
 
-// Execute parses os.Args and runs the selected subcommand.
+// Execute parses os.Args and runs either a selected subcommand or the complete
+// demo pipeline when no subcommand is present.
 func Execute() error {
-	if len(os.Args) < 2 {
-		Usage()
-		os.Exit(2)
+	return RunArgs(os.Args[1:])
+}
+
+// RunArgs dispatches a subcommand when the first argument names one. Otherwise
+// it treats the arguments as one-shot demo flags and runs geocode, matrix, and
+// itinerary in sequence.
+func RunArgs(args []string) error {
+	if len(args) > 0 && isCommand(args[0]) {
+		return Run(args[0], args[1:])
 	}
-	return Run(os.Args[1], os.Args[2:])
+	return runAll(args)
+}
+
+func isCommand(value string) bool {
+	switch value {
+	case "geocode", "matrix", "edge-metadata", "match-edges", "itinerary":
+		return true
+	default:
+		return false
+	}
 }
 
 // Usage prints top-level CLI help to stderr.
 func Usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
+  route-optimizer [one-shot flags] [addresses-file]
   route-optimizer <command> [flags]
+
+With no command, runs the demo pipeline in one go:
+  addresses → geocode → matrix → itinerary
+
+One-shot flags:
+  -config      YAML config (default: config.yaml, then config.example.yaml)
+  -addresses   newline-separated addresses file (or pass it positionally)
+  -stops-out   geocoded stops artifact (default: data/stops.json)
+  -matrix-out  duration matrix artifact (default: data/matrix.json)
 
 Commands:
   geocode     -addresses addresses.txt  →  -out stops.json (lat/lon + display name)
@@ -33,10 +59,9 @@ Commands:
   match-edges -edge-metadata edge_metadata.json → enriched edge metadata with DOT link IDs
   itinerary   -stops stops.json -matrix matrix.json → top-K routes + Maps links
 
-Shared flags:
-  -config   YAML config (default: config.yaml)
-
 Examples:
+  route-optimizer addresses.txt
+  route-optimizer -config config.yaml -addresses addresses.txt
   route-optimizer geocode -addresses addresses.txt -out data/stops.json
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
   route-optimizer edge-metadata -stops data/stops.json -out data/edge_metadata.json
@@ -48,6 +73,82 @@ Examples:
 
 Run 'route-optimizer <command> -h' for command-specific flags.
 `)
+}
+
+// runAll executes the stable, dependency-light demo path. The traffic-aware
+// edge metadata and DOT matching stages remain explicit because they require
+// substantially more live requests and optional Socrata configuration.
+func runAll(args []string) error {
+	fs := flag.NewFlagSet("route-optimizer", flag.ContinueOnError)
+	configPath := fs.String("config", "config.yaml", "path to YAML config")
+	addressesPath := fs.String("addresses", "", "newline-separated addresses file")
+	stopsPath := fs.String("stops-out", "data/stops.json", "output stops JSON")
+	matrixPath := fs.String("matrix-out", "data/matrix.json", "output duration matrix JSON")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return fmt.Errorf("parse one-shot flags: %w", err)
+	}
+
+	positional := fs.Args()
+	if len(positional) > 1 {
+		return fmt.Errorf("expected at most one addresses file, got %d", len(positional))
+	}
+	if len(positional) == 1 {
+		if *addressesPath != "" {
+			return fmt.Errorf("addresses file specified both positionally and with -addresses")
+		}
+		*addressesPath = positional[0]
+	}
+	selectedConfigPath := oneShotConfigPath(*configPath)
+
+	fmt.Printf("one-shot: geocode → matrix → itinerary\n")
+	if selectedConfigPath != *configPath {
+		fmt.Printf("one-shot: %s not found; using %s\n", *configPath, selectedConfigPath)
+	}
+
+	geocodeArgs := []string{
+		"-config", selectedConfigPath,
+		"-out", *stopsPath,
+	}
+	if *addressesPath != "" {
+		geocodeArgs = append(geocodeArgs, "-addresses", *addressesPath)
+	}
+	if err := runGeocode(geocodeArgs); err != nil {
+		return fmt.Errorf("one-shot geocode: %w", err)
+	}
+	if err := runMatrix([]string{
+		"-config", selectedConfigPath,
+		"-stops", *stopsPath,
+		"-out", *matrixPath,
+	}); err != nil {
+		return fmt.Errorf("one-shot matrix: %w", err)
+	}
+	if err := runItinerary([]string{
+		"-config", selectedConfigPath,
+		"-stops", *stopsPath,
+		"-matrix", *matrixPath,
+	}); err != nil {
+		return fmt.Errorf("one-shot itinerary: %w", err)
+	}
+
+	fmt.Printf("one-shot: complete; artifacts written to %s and %s\n", *stopsPath, *matrixPath)
+	return nil
+}
+
+func oneShotConfigPath(path string) string {
+	if path != "config.yaml" {
+		return path
+	}
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return path
+	}
+	const examplePath = "config.example.yaml"
+	if _, err := os.Stat(examplePath); err == nil {
+		return examplePath
+	}
+	return path
 }
 
 // Run dispatches a subcommand with its flag args.
@@ -345,7 +446,7 @@ func runMatrix(args []string) error {
 func runGeocode(args []string) error {
 	fs := flag.NewFlagSet("geocode", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
-	addressesPath := fs.String("addresses", "addresses.txt", "newline-separated addresses file")
+	addressesPath := fs.String("addresses", "", "newline-separated addresses file (defaults to config input)")
 	outPath := fs.String("out", "data/stops.json", "output stops file")
 	fs.Parse(args)
 
@@ -367,7 +468,14 @@ func runGeocode(args []string) error {
 			len(addresses), cfg.Solver.MaxStops)
 	}
 
-	fmt.Printf("geocode: resolving %d addresses from %s\n", len(addresses), *addressesPath)
+	addressSource := *addressesPath
+	if addressSource == "" {
+		addressSource = cfg.Input.AddressesFile
+	}
+	if addressSource == "" {
+		addressSource = "config input.addresses"
+	}
+	fmt.Printf("geocode: resolving %d addresses from %s\n", len(addresses), addressSource)
 
 	cache, err := route.LoadGeocode(cfg.Cache.GeocodeFile)
 	if err != nil {

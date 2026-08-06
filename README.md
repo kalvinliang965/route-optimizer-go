@@ -77,6 +77,28 @@ addresses.txt
   -> top-K routes + Google Maps links
 ```
 
+Run that entire flow with no subcommand by handing the CLI an addresses file:
+
+```bash
+go run ./cmd/route-optimizer addresses.txt
+```
+
+This writes `data/stops.json` and `data/matrix.json`, then immediately prints
+the ranked routes. It uses `config.yaml` when present and otherwise falls back
+to the tracked `config.example.yaml`. The input can also be passed as a flag,
+and artifact paths can be overridden when a clean demo directory is useful:
+
+```bash
+go run ./cmd/route-optimizer \
+  -config config.yaml \
+  -addresses addresses.txt \
+  -stops-out data/stops.json \
+  -matrix-out data/matrix.json
+```
+
+The edge-metadata and live-DOT stages remain explicit advanced commands because
+they require many more live requests and matching configuration.
+
 ### Target Traffic-Aware Flow
 
 ```text
@@ -159,6 +181,11 @@ If an edge has no DOT match, keep multiplier `1.0`.
 The current CLI uses stdlib `flag` with manual subcommand dispatch.
 
 ```bash
+# One-shot demo: addresses -> stops -> matrix -> ranked itineraries
+go run ./cmd/route-optimizer addresses.txt
+
+# Or run individual stages:
+
 # 1. Addresses -> geocoded stops
 go run ./cmd/route-optimizer geocode \
   -addresses addresses.txt \
