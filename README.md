@@ -2,7 +2,8 @@
 
 Go CLI proof-of-concept for ranking small Manhattan driving itineraries. The
 current demo path takes an ordered stop list, builds an OSRM duration matrix,
-solves the top-K stop orders, and prints Google Maps direction links.
+solves the top-K round trips, and prints Google Maps direction links. Stop `0`
+(the first input address) is the depot, so every result starts and ends there.
 
 The next architecture layer is traffic-aware routing: keep the OSRM baseline
 matrix stable, build route geometry metadata for each matrix cell, match those
@@ -60,7 +61,7 @@ module and CLI; later we can package the matrix builder and solver separately.
 | Local Matching Service | Initial working | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
 | Traffic Snapshot Builder | Initial working | Loops edge metadata through fixture or DOT edge-state fetchers, applies EMA, and builds `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
 | Traffic Cache/EMA Persistence | Planned | Persists previous smoothed traffic values for future EMA updates | planned `data/traffic_cache.json` |
-| Solver Service | Working | Brute-force stop order search from fixed depot index `0`, retaining top-K routes | ranked `RouteResult`s |
+| Solver Service | Working | Brute-force round-trip search from fixed depot index `0`, retaining top-K tours | ranked `RouteResult`s |
 | Maps/Itinerary Output | Working | Prints ranked stops, total duration, and Google Maps deep links | terminal output |
 
 ## Data Flow

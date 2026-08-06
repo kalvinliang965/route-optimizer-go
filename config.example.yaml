@@ -5,7 +5,7 @@
 # Address list can stay in a separate file, or be listed under input.addresses.
 
 solver:
-  # Return the top-K shortest open routes (depot fixed at index 0).
+  # Return the top-K shortest round trips (depot fixed at index 0).
   top_k: 5
   # Hard cap on stop count (including depot). Brute-force is (n-1)! — keep this low.
   max_stops: 15

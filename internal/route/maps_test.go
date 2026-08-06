@@ -53,6 +53,9 @@ func TestGoogleMapsDirectionsURL(t *testing.T) {
 			path: []int{0, 1, 2, 0},
 			check: func(t *testing.T, raw string) {
 				q := parseQuery(t, raw)
+				if q.Get("origin") != "40.712800,-74.006000" || q.Get("destination") != "40.712800,-74.006000" {
+					t.Errorf("round trip origin/destination = %q/%q", q.Get("origin"), q.Get("destination"))
+				}
 				want := "40.758000,-73.985500|40.748400,-73.985700"
 				if q.Get("waypoints") != want {
 					t.Errorf("waypoints = %q; want %q", q.Get("waypoints"), want)

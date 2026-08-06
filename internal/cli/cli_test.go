@@ -201,7 +201,7 @@ func TestRunItineraryAppliesEdgeStateFixture(t *testing.T) {
 	if !strings.Contains(output, "applied traffic fixture") {
 		t.Fatalf("output missing traffic fixture banner:\n%s", output)
 	}
-	if !strings.Contains(output, "#1  0.33 mins") {
+	if !strings.Contains(output, "#1  0.42 mins") {
 		t.Fatalf("output missing adjusted best duration:\n%s", output)
 	}
 	stopA := strings.Index(output, "Stop A")
@@ -309,7 +309,7 @@ func TestRunItineraryAppliesDOTTraffic(t *testing.T) {
 	if !strings.Contains(output, "applied DOT traffic") {
 		t.Fatalf("output missing DOT traffic banner:\n%s", output)
 	}
-	if !strings.Contains(output, "#1  0.33 mins") {
+	if !strings.Contains(output, "#1  0.42 mins") {
 		t.Fatalf("output missing adjusted best duration:\n%s", output)
 	}
 	stopA := strings.Index(output, "Stop A")
