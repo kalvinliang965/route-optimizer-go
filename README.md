@@ -1,14 +1,15 @@
 # Manhattan Multi-Stop Route Optimizer
 
 Go CLI proof-of-concept for ranking small Manhattan driving itineraries. The
-current demo path takes an ordered stop list, builds an OSRM duration matrix,
+current demo path takes an input stop list, builds an OSRM duration matrix,
 solves the top-K round trips, and prints Google Maps direction links. Stop `0`
 (the first input address) is the depot, so every result starts and ends there.
 
-The next architecture layer is traffic-aware routing: keep the OSRM baseline
-matrix stable, build route geometry metadata for each matrix cell, match those
-routes to NYC DOT traffic links, smooth live traffic with EMA, then solve using
-an adjusted in-memory matrix.
+An optional traffic-aware path is also implemented at demo quality. It keeps the
+OSRM baseline matrix stable, builds route geometry metadata for each matrix
+cell, matches those routes to NYC DOT traffic links, derives congestion
+multipliers, and solves against an adjusted in-memory matrix. Matching
+inspection and persistent traffic history are still planned.
 
 ## Summary Contract
 
@@ -40,7 +41,7 @@ OSRM baseline matrix       -> stable on disk
 OSRM route geometry        -> edge metadata per matrix cell
 NYC DOT traffic records    -> latest speeds for DOT link_ids
 local matcher              -> binds DOT link_ids to matrix cells
-EMA traffic updater        -> smooths noisy traffic multipliers
+optional EMA updater       -> smooths multipliers when previous state exists
 solver                     -> ranks routes using adjusted matrix
 ```
 
@@ -56,10 +57,10 @@ module and CLI; later we can package the matrix builder and solver separately.
 |---|---|---|---|
 | Address/Geocode Service | Working | Reads address input and resolves lat/lon with Nominatim plus cache | `data/stops.json`, `data/geocode_cache.json` |
 | Baseline Matrix Service | Working | Builds the full N x N OSRM duration table for the stops | `data/matrix.json`, `data/matrix_cache.json` |
-| Edge Geometry Service (`pepsi`) | Initial working | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
-| DOT Traffic Fetcher | Initial working | Pulls NYC DOT Traffic Speeds rows from Socrata/SODA by matched `link_id` or paginated full feed | in-memory DOT traffic records; cache planned |
-| Local Matching Service | Initial working | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
-| Traffic Snapshot Builder | Initial working | Loops edge metadata through fixture or DOT edge-state fetchers, applies EMA, and builds `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
+| Edge Geometry Service (`pepsi`) | Working, demo-grade | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
+| DOT Traffic Fetcher | Working, demo-grade | Pulls NYC DOT Traffic Speeds rows from Socrata/SODA by matched `link_id` or paginated full feed | in-memory DOT traffic records; cache planned |
+| Local Matching Service | Working, tuning needed | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | `data/edge_metadata_matched.json` |
+| Traffic Snapshot Builder | Working, demo-grade | Converts fixture or live DOT edge state into optional EMA-smoothed `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
 | Traffic Cache/EMA Persistence | Planned | Persists previous smoothed traffic values for future EMA updates | planned `data/traffic_cache.json` |
 | Solver Service | Working | Brute-force round-trip search from fixed depot index `0`, retaining top-K tours | ranked `RouteResult`s |
 | Maps/Itinerary Output | Working | Prints ranked stops, total duration, and Google Maps deep links | terminal output |
@@ -75,13 +76,14 @@ addresses.txt
   -> matrix
   -> data/matrix.json
   -> itinerary
-  -> top-K routes + Google Maps links
+  -> top-K round trips (depot -> all stops -> depot)
+  -> Google Maps links
 ```
 
 Run that entire flow with no subcommand by handing the CLI an addresses file:
 
 ```bash
-go run ./cmd/route-optimizer addresses.txt
+go run ./cmd/route-optimizer examples/addresses.txt
 ```
 
 This writes `data/stops.json` and `data/matrix.json`, then immediately prints
@@ -100,35 +102,40 @@ go run ./cmd/route-optimizer \
 The edge-metadata and live-DOT stages remain explicit advanced commands because
 they require many more live requests and matching configuration.
 
-### Target Traffic-Aware Flow
+### Optional Traffic-Aware Flow
 
 ```text
 data/stops.json
-  -> Baseline Matrix Service
+  -> matrix
   -> data/matrix.json
 
 data/stops.json
-  -> Edge Geometry Service / pepsi
+  -> edge-metadata (one OSRM /route request per directed stop pair)
   -> data/edge_metadata.json
 
-NYC DOT Socrata API
-  -> DOT Traffic Fetcher
-  -> in-memory DOT traffic records
-  -> planned data/dot_traffic_cache.json
+data/edge_metadata.json + NYC DOT rows (live or fixture)
+  -> match-edges
+  -> data/edge_metadata_matched.json
 
-data/edge_metadata.json + DOT traffic rows/cache
-  -> Local Matching Service
-  -> matrix edge -> []DOT link_id bindings
-
-DOT latest speeds + previous traffic_cache.json
-  -> EMA Matrix Updater
-  -> TrafficSnapshot multipliers
-
-data/matrix.json + TrafficSnapshot
-  -> ApplyTraffic
+data/matrix.json + data/edge_metadata_matched.json
+  -> itinerary -dot-traffic
+  -> fetch latest rows for matched DOT link_ids
+  -> current TrafficSnapshot multipliers
   -> adjusted in-memory matrix
-  -> Solver Service
+  -> top-K round trips + Google Maps links
+
+Alternative deterministic demo:
+data/matrix.json + data/edge_metadata.json + edge-state fixture
+  -> itinerary -edge-state-fixture ...
+  -> optional EMA using current/previous fixture values
+  -> adjusted in-memory matrix
+  -> top-K round trips + Google Maps links
 ```
+
+The live CLI does not yet persist previous traffic multipliers between runs.
+Consequently, a live run uses the current multiplier directly unless previous
+state is supplied programmatically. Persistent DOT and EMA caches remain
+planned.
 
 ## Traffic Model
 
@@ -145,45 +152,65 @@ link_name
 borough
 ```
 
-The local matcher decides which DOT links overlap each OSRM route cell. Once a
-cell has matched links, the traffic updater can convert live speeds into a
-multiplier:
+The local matcher decides which DOT links overlap each OSRM route cell. For a
+matched edge, the live updater compares the edge's OSRM baseline speed with the
+average observed DOT speed:
+
+```text
+baseline_mph = (edge_distance_m / edge_duration_sec) converted to mph
+current_multiplier = baseline_mph / observed_dot_mph
+```
+
+It then applies the multiplier to a copy of the baseline matrix:
 
 ```text
 adjusted[i][j] = baseline[i][j] * traffic_multiplier[i][j]
 ```
 
-Use EMA to smooth noisy live updates:
+When previous state is available, EMA can smooth noisy updates:
 
 ```text
 ema = alpha * latest_multiplier + (1 - alpha) * previous_ema
 ```
 
-Start with `alpha = 0.3` for demos. Later we can use a time-aware EMA based on
-poll interval or half-life.
+The default `alpha` is `0.3`. Fixture-backed demos can provide previous values;
+live cross-run smoothing requires the planned persistent traffic cache.
 
 ## Geometry Matching Strategy
 
-Do not call Socrata once per OSRM intermediate point. That would be slow and
-fragile. Instead:
+The current matching flow avoids calling Socrata once per OSRM geometry point:
 
-1. Fetch DOT rows in batches and cache them.
-2. Parse DOT `link_points` locally.
-3. Fetch OSRM `/route` geometry once per matrix cell and cache it.
-4. Simplify or sample OSRM points before matching.
-5. Match OSRM route segments to nearby DOT link segments within a distance
-   tolerance.
-6. Store matched `link_id`s on the edge metadata.
+1. `edge-metadata` fetches every directed OSRM route and writes a reusable
+   artifact. It does not maintain a separate automatic geometry cache.
+2. `match-edges` fetches DOT rows in pages, or reads a DOT fixture.
+3. Parse DOT `link_points` locally.
+4. Compare DOT link points with each OSRM route polyline using configurable
+   maximum and average distance thresholds.
+5. Store matched `link_id`s in a new edge metadata artifact.
+6. During `itinerary -dot-traffic`, fetch only the latest rows for those matched
+   IDs and build the in-memory traffic snapshot.
 
-If an edge has no DOT match, keep multiplier `1.0`.
+In short:
+
+```text
+OSRM geometry is persisted as an artifact and reused explicitly.
+DOT rows and previous EMA state are not yet persisted automatically.
+```
+
+Earlier design ideas such as route-point sampling, spatial indexing, and
+automatic geometry/DOT caches are future tuning work rather than current
+behavior.
+
+With the default settings, an edge with no usable DOT match keeps multiplier
+`1.0`.
 
 ## CLI
 
 The current CLI uses stdlib `flag` with manual subcommand dispatch.
 
 ```bash
-# One-shot demo: addresses -> stops -> matrix -> ranked itineraries
-go run ./cmd/route-optimizer addresses.txt
+# One-shot demo: addresses -> stops -> matrix -> ranked round trips
+go run ./cmd/route-optimizer examples/addresses.txt
 
 # Or run individual stages:
 
@@ -202,7 +229,7 @@ go run ./cmd/route-optimizer edge-metadata \
   -stops data/stops.json \
   -out data/edge_metadata.json
 
-# 4. Solve top-K routes and print Maps links
+# 4. Solve top-K round trips and print Maps links
 go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
   -matrix data/matrix.json
@@ -250,10 +277,11 @@ cmd/route-optimizer/main.go   # CLI entrypoint
 internal/cli/cli.go           # subcommands and orchestration
 internal/route/               # geocode, matrix, solver, maps, traffic helpers
 pepsi/                        # current scratch area for edge geometry / DOT ideas
+examples/addresses.txt        # validated congestion-oriented demo input
 config.example.yaml           # config template
 ```
 
-Local demo artifacts may exist but are ignored by git:
+Local runtime artifacts may exist outside the tracked source:
 
 ```text
 addresses.txt
@@ -283,13 +311,15 @@ Working:
   `link_points`.
 - Match-edges command for writing enriched edge metadata.
 - Itinerary DOT traffic flags for solving against a live DOT-adjusted in-memory matrix.
-- YAML traffic fixture loader.
+- YAML traffic fixture loader (library-level; the CLI uses the JSON edge-state fixture).
 
 WIP/planned:
 
 - Match tuning/debug output for explaining why links did or did not match.
-- EMA-backed traffic cache.
+- Automatic edge geometry and DOT row caches.
+- Persistent EMA traffic history for live runs.
 - Packaging matrix and solver boundaries.
+- Saving successful geocode entries when a later address in the batch fails.
 
 Known dev note:
 
@@ -299,13 +329,7 @@ Known dev note:
 
 ## Testing
 
-Core route optimizer packages:
-
-```bash
-go test ./cmd/route-optimizer ./internal/...
-```
-
-Full repo, once `pepsi` is compile-safe:
+The full repository is compile-safe and can be tested with:
 
 ```bash
 go test ./...
@@ -313,6 +337,9 @@ go test ./...
 
 ## Demo Scope
 
-This is built for small daily route batches, typically around 6-10 stops. The
-solver uses exhaustive permutation search from a fixed depot, so it is a good
-demo/pilot fit but not a large fleet VRP engine.
+This is built for small daily route batches, typically around 6-9 stops. The
+solver materializes all `(n-1)!` permutations, fixes stop `0` as the depot, and
+adds the depot again at the end of each tour. The configured `max_stops` is a
+guard, not a performance promise: values near 15 are computationally
+impractical with the current solver. This is a demo/pilot optimizer, not a
+large-fleet VRP engine.
