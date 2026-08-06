@@ -15,8 +15,9 @@ matrix[i][j] = baseline drive time from stop i to stop j
 What road geometry does matrix cell i -> j use?
 ```
 
-Once we know that geometry, another layer can match it to NYC DOT traffic links,
-smooth live traffic with EMA, and update the in-memory matrix before solving.
+Once we know that geometry, another layer can match it to NYC DOT traffic links.
+Then `pepsi` can fetch live DOT speeds for those matched links, smooth traffic
+with EMA, and update the in-memory matrix before solving.
 
 ## Accuracy Contract
 
@@ -63,12 +64,12 @@ data/edge_metadata.json
 `pepsi` should stay focused. It should not own:
 
 - the top-K route solver
-- the final adjusted matrix application
-- EMA smoothing
 - itinerary printing
 - Google Maps links
 
-Those belong to the main route package / CLI pipeline.
+Those belong to the main route package / CLI pipeline. The traffic snapshot
+helpers currently live here because they are still tied to the edge metadata
+experiment, but they produce data for the solver rather than solving routes.
 
 `pepsi` may eventually include the local geometry matcher, but it should still
 produce data rather than directly solve routes.
@@ -118,6 +119,7 @@ data/edge_metadata.json + DOT traffic cache
   -> edge metadata with matched DOT link_ids
 
 matched DOT link_ids + live speeds
+  -> DOT edge-state fetcher
   -> traffic multiplier / EMA layer
   -> TrafficSnapshot
 
@@ -173,14 +175,15 @@ Important implementation notes:
 - Cache results on disk so demo runs do not repeatedly hit OSRM.
 - Parse into typed structs, not `map[string]interface{}`.
 
-## Local Matching Plan
+## Local Matching
 
 Do not query Socrata once per OSRM intermediate point. Instead:
 
-1. Fetch DOT traffic rows separately and cache them.
+1. Fetch DOT traffic rows separately, either from a fixture or the paginated
+   Socrata feed.
 2. Parse DOT `link_points` into local coordinate polylines.
-3. Simplify or sample OSRM geometry before matching.
-4. Compare OSRM route segments to nearby DOT link segments locally.
+3. Compare each DOT link polyline to nearby OSRM route geometry locally.
+4. Keep links whose DOT points are within conservative distance thresholds.
 5. Store matched `link_id`s back on the edge metadata.
 
 For a demo, start conservative:
@@ -208,7 +211,12 @@ Empty matches are acceptable; the traffic layer should then use multiplier
    state fetcher, with EMA smoothing. Done.
 10. Add fixture-backed edge-state fetcher for fake/demo traffic flows. Done.
 11. Wire fixture-backed edge traffic into the `itinerary` CLI path. Done.
-12. Add local DOT matching after the metadata artifact is stable.
+12. Add DOT/Socrata-backed edge-state fetcher for already matched DOT link IDs.
+    Done.
+13. Wire DOT-backed edge traffic into the `itinerary` CLI path. Done.
+14. Add local DOT matching after the metadata artifact is stable. Done.
+15. Add a `match-edges` CLI command that writes enriched edge metadata. Done.
+16. Add EMA/cache persistence so DOT runs can reuse previous smoothed values.
 
 ## Current State
 
@@ -225,9 +233,22 @@ This package is not complete yet, but the edge artifact builder is in place:
   through `route.ApplyTraffic`.
 - `LoadFixtureEdgeStateFetcher` loads fake/demo traffic states from
   `testdata/edge_state_fixture.json`.
+- `DOTClient` fetches NYC DOT Traffic Speeds rows from Socrata/SODA in batches
+  by `link_id`.
+- `DOTEdgeStateFetcher` converts matched live DOT speeds into per-edge traffic
+  multipliers against OSRM baseline speed.
+- `MatchDOTLinks` parses DOT `link_points` and enriches edges with local
+  `matched_dot_link_ids`.
+- `DOTClient.FetchAllTrafficRecords` can fetch the paginated DOT feed for local
+  matching candidates.
+- The `match-edges` command can write enriched edge metadata from a DOT fixture
+  or live Socrata rows.
 - The `itinerary` command can apply the fixture-backed traffic overlay with
   `-edge-metadata` and `-edge-state-fixture`.
+- The `itinerary` command can apply DOT-backed traffic with `-edge-metadata`
+  and `-dot-traffic` when edge metadata already has `matched_dot_link_ids`.
 - Unit tests mock OSRM with `httptest`.
+- Unit tests mock DOT/Socrata with `httptest`.
 - Parser tests read a real recorded OSRM response from
   `testdata/osrm_route_response.json`.
 - A real OSRM integration test exists but is skipped unless
@@ -239,5 +260,6 @@ Regenerate the recorded fixture with:
 PEPSI_RECORD_OSRM_FIXTURE=1 go test ./pepsi -run TestRecordOSRMRouteFixture -count=1 -v
 ```
 
-The immediate goal is not live traffic. The immediate goal is a stable,
-testable edge metadata artifact that the traffic layer can consume.
+The immediate next goal is making matching inspectable: tune thresholds on real
+routes, add debug output for rejected links, and persist DOT/EMA state so demo
+runs are repeatable.

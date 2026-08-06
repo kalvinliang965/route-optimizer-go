@@ -30,6 +30,7 @@ Commands:
   geocode     -addresses addresses.txt  →  -out stops.json (lat/lon + display name)
   matrix      -stops stops.json         →  -out matrix.json (OSRM durations)
   edge-metadata -stops stops.json       →  -out edge_metadata.json (OSRM route geometry)
+  match-edges -edge-metadata edge_metadata.json → enriched edge metadata with DOT link IDs
   itinerary   -stops stops.json -matrix matrix.json → top-K routes + Maps links
 
 Shared flags:
@@ -39,8 +40,10 @@ Examples:
   route-optimizer geocode -addresses addresses.txt -out data/stops.json
   route-optimizer matrix -stops data/stops.json -out data/matrix.json
   route-optimizer edge-metadata -stops data/stops.json -out data/edge_metadata.json
+  route-optimizer match-edges -edge-metadata data/edge_metadata.json -out data/edge_metadata_matched.json
   route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json
   route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json -edge-state-fixture pepsi/testdata/edge_state_fixture.json
+  route-optimizer itinerary -stops data/stops.json -matrix data/matrix.json -edge-metadata data/edge_metadata.json -dot-traffic
   route-optimizer itinerary -stops data/stops.json -refresh-matrix
 
 Run 'route-optimizer <command> -h' for command-specific flags.
@@ -56,6 +59,8 @@ func Run(command string, args []string) error {
 		return runMatrix(args)
 	case "edge-metadata":
 		return runEdgeMetadata(args)
+	case "match-edges":
+		return runMatchEdges(args)
 	case "itinerary":
 		return runItinerary(args)
 	default:
@@ -108,6 +113,77 @@ func runEdgeMetadata(args []string) error {
 	return nil
 }
 
+func runMatchEdges(args []string) error {
+	fs := flag.NewFlagSet("match-edges", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to YAML config")
+	edgeMetadataPath := fs.String("edge-metadata", "data/edge_metadata.json", "edge metadata JSON from edge-metadata")
+	outPath := fs.String("out", "data/edge_metadata_matched.json", "output enriched edge metadata JSON")
+	dotFixturePath := fs.String("dot-fixture", "", "fixture JSON array of DOT traffic records; if empty, fetch live DOT rows")
+	dotEndpoint := fs.String("dot-endpoint", pepsi.DefaultDOTTrafficEndpoint, "NYC DOT Traffic Speeds Socrata endpoint")
+	dotAppToken := fs.String("dot-app-token", os.Getenv("SOCRATA_APP_TOKEN"), "Socrata app token for DOT traffic requests")
+	dotPageLimit := fs.Int("dot-page-limit", pepsi.DefaultDOTPageLimit, "DOT rows per Socrata page when fetching live rows")
+	dotMaxPages := fs.Int("dot-max-pages", 0, "maximum DOT pages to fetch; 0 means until a short page")
+	matchMaxDistance := fs.Float64("match-max-distance-m", pepsi.DefaultMatchMaxDistanceM, "maximum distance from any DOT link point to an OSRM edge")
+	matchMaxAverageDistance := fs.Float64("match-max-average-distance-m", pepsi.DefaultMatchMaxAverageDistanceM, "maximum average distance from DOT link points to an OSRM edge")
+	matchMaxLinksPerEdge := fs.Int("match-max-links-per-edge", 0, "maximum matched DOT links per edge; 0 means no limit")
+	preserveExisting := fs.Bool("preserve-existing", false, "preserve existing matched_dot_link_ids and append new matches")
+	fs.Parse(args)
+
+	cfg, err := route.LoadConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("load config %q: %w", *configPath, err)
+	}
+	cfg.ApplyRuntime()
+
+	metadata, err := pepsi.ReadEdgeMetadata(*edgeMetadataPath)
+	if err != nil {
+		return fmt.Errorf("read edge metadata: %w", err)
+	}
+
+	var records []pepsi.DOTTrafficRecord
+	sourceLabel := ""
+	if *dotFixturePath != "" {
+		if err := route.ReadJSON(*dotFixturePath, &records); err != nil {
+			return fmt.Errorf("read DOT fixture %s: %w", *dotFixturePath, err)
+		}
+		sourceLabel = fmt.Sprintf("fixture %s", *dotFixturePath)
+	} else {
+		dotClient := pepsi.NewDOTClient(*dotEndpoint)
+		dotClient.AppToken = *dotAppToken
+		dotClient.UserAgent = cfg.HTTP.UserAgent
+		dotClient.HTTPClient = &http.Client{
+			Timeout: time.Duration(cfg.HTTP.OSRMTimeoutSec) * time.Second,
+		}
+
+		records, err = dotClient.FetchAllTrafficRecords(context.Background(), pepsi.DOTFetchAllOptions{
+			Limit:    *dotPageLimit,
+			MaxPages: *dotMaxPages,
+		})
+		if err != nil {
+			return fmt.Errorf("fetch DOT traffic records: %w", err)
+		}
+		sourceLabel = fmt.Sprintf("DOT traffic %s", *dotEndpoint)
+	}
+
+	matched, summary, err := pepsi.MatchDOTLinks(metadata, records, pepsi.MatchOptions{
+		MaxDistanceM:        *matchMaxDistance,
+		MaxAverageDistanceM: *matchMaxAverageDistance,
+		MaxLinksPerEdge:     *matchMaxLinksPerEdge,
+		PreserveExisting:    *preserveExisting,
+	})
+	if err != nil {
+		return fmt.Errorf("match DOT links: %w", err)
+	}
+	if err := pepsi.WriteEdgeMetadata(*outPath, matched); err != nil {
+		return fmt.Errorf("write matched edge metadata %s: %w", *outPath, err)
+	}
+
+	fmt.Printf("match-edges: matched %d/%d edges with %d DOT link bindings from %s (%d candidate links, %d skipped links)\n",
+		summary.MatchedEdgeCount, summary.EdgeCount, summary.TotalMatchedLinks, sourceLabel, summary.CandidateLinkCount, summary.SkippedLinkCount)
+	fmt.Printf("match-edges: wrote %s\n", *outPath)
+	return nil
+}
+
 func runItinerary(args []string) error {
 	fs := flag.NewFlagSet("itinerary", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to YAML config")
@@ -116,11 +192,20 @@ func runItinerary(args []string) error {
 	refreshMatrix := fs.Bool("refresh-matrix", false, "rebuild matrix.json from stops (uses OSRM/cache) before solving")
 	edgeMetadataPath := fs.String("edge-metadata", "data/edge_metadata.json", "edge metadata JSON for traffic overlay")
 	edgeStateFixturePath := fs.String("edge-state-fixture", "", "fixture JSON with per-edge current/previous traffic multipliers")
+	dotTraffic := fs.Bool("dot-traffic", false, "apply live NYC DOT traffic using matched_dot_link_ids from edge metadata")
+	dotEndpoint := fs.String("dot-endpoint", pepsi.DefaultDOTTrafficEndpoint, "NYC DOT Traffic Speeds Socrata endpoint")
+	dotAppToken := fs.String("dot-app-token", os.Getenv("SOCRATA_APP_TOKEN"), "Socrata app token for DOT traffic requests")
+	dotChunkSize := fs.Int("dot-chunk-size", pepsi.DefaultDOTChunkSize, "DOT link IDs per Socrata request")
+	dotLimitPerLink := fs.Int("dot-limit-per-link", pepsi.DefaultDOTLimitPerLink, "DOT rows requested per link ID")
 	trafficDefaultMultiplier := fs.Float64("traffic-default-multiplier", 1.0, "default traffic multiplier for edges without traffic state")
 	trafficEMAAlpha := fs.Float64("traffic-ema-alpha", 0.3, "EMA alpha for current vs previous traffic multiplier")
 	trafficMinMultiplier := fs.Float64("traffic-min-multiplier", 0.5, "minimum traffic multiplier clamp")
 	trafficMaxMultiplier := fs.Float64("traffic-max-multiplier", 3.0, "maximum traffic multiplier clamp")
 	fs.Parse(args)
+
+	if *edgeStateFixturePath != "" && *dotTraffic {
+		return fmt.Errorf("choose either -edge-state-fixture or -dot-traffic, not both")
+	}
 
 	cfg, err := route.LoadConfig(*configPath)
 	if err != nil {
@@ -161,14 +246,10 @@ func runItinerary(args []string) error {
 		}
 	}
 
-	if *edgeStateFixturePath != "" {
+	if *edgeStateFixturePath != "" || *dotTraffic {
 		metadata, err := pepsi.ReadEdgeMetadata(*edgeMetadataPath)
 		if err != nil {
 			return fmt.Errorf("read edge metadata: %w", err)
-		}
-		fetcher, err := pepsi.LoadFixtureEdgeStateFetcher(*edgeStateFixturePath)
-		if err != nil {
-			return fmt.Errorf("load edge state fixture: %w", err)
 		}
 		opts := pepsi.TrafficOptions{
 			DefaultMultiplier: *trafficDefaultMultiplier,
@@ -176,13 +257,42 @@ func runItinerary(args []string) error {
 			MinMultiplier:     *trafficMinMultiplier,
 			MaxMultiplier:     *trafficMaxMultiplier,
 		}
+
+		var fetcher pepsi.EdgeStateFetcher
+		sourceLabel := ""
+		if *edgeStateFixturePath != "" {
+			fixtureFetcher, err := pepsi.LoadFixtureEdgeStateFetcher(*edgeStateFixturePath)
+			if err != nil {
+				return fmt.Errorf("load edge state fixture: %w", err)
+			}
+			fetcher = fixtureFetcher
+			sourceLabel = fmt.Sprintf("traffic fixture %s", *edgeStateFixturePath)
+		}
+		if *dotTraffic {
+			dotClient := pepsi.NewDOTClient(*dotEndpoint)
+			dotClient.AppToken = *dotAppToken
+			dotClient.UserAgent = cfg.HTTP.UserAgent
+			dotClient.HTTPClient = &http.Client{
+				Timeout: time.Duration(cfg.HTTP.OSRMTimeoutSec) * time.Second,
+			}
+			dotClient.ChunkSize = *dotChunkSize
+			dotClient.LimitPerLink = *dotLimitPerLink
+
+			dotFetcher, err := pepsi.BuildDOTEdgeStateFetcher(context.Background(), dotClient, metadata, nil)
+			if err != nil {
+				return fmt.Errorf("build DOT edge state fetcher: %w", err)
+			}
+			fetcher = dotFetcher
+			sourceLabel = fmt.Sprintf("DOT traffic %s", *dotEndpoint)
+		}
+
 		adjusted, snap, err := pepsi.ApplyEdgeTraffic(context.Background(), matrix, metadata, fetcher, opts)
 		if err != nil {
 			return fmt.Errorf("apply edge traffic: %w", err)
 		}
 		matrix = adjusted
-		fmt.Printf("itinerary: applied traffic fixture %s via %s (%d edge multipliers, alpha %.2f)\n",
-			*edgeStateFixturePath, *edgeMetadataPath, len(snap.EdgeMultipliers), opts.EMAAlpha)
+		fmt.Printf("itinerary: applied %s via %s (%d edge multipliers, alpha %.2f)\n",
+			sourceLabel, *edgeMetadataPath, len(snap.EdgeMultipliers), opts.EMAAlpha)
 	}
 
 	fmt.Printf("itinerary: solving top %d from %s + %s\n", cfg.Solver.TopK, *stopsPath, *matrixPath)

@@ -56,9 +56,9 @@ module and CLI; later we can package the matrix builder and solver separately.
 | Address/Geocode Service | Working | Reads address input and resolves lat/lon with Nominatim plus cache | `data/stops.json`, `data/geocode_cache.json` |
 | Baseline Matrix Service | Working | Builds the full N x N OSRM duration table for the stops | `data/matrix.json`, `data/matrix_cache.json` |
 | Edge Geometry Service (`pepsi`) | Initial working | For each matrix cell `i -> j`, fetches OSRM `/route` geometry and step metadata | `data/edge_metadata.json` |
-| DOT Traffic Fetcher | Planned | Pulls latest NYC DOT Traffic Speeds rows from Socrata/SODA | planned `data/dot_traffic_cache.json` |
-| Local Matching Service | Planned | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
-| Traffic Snapshot Builder | Initial working | Loops edge metadata through an edge-state fetcher, applies EMA, and builds `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
+| DOT Traffic Fetcher | Initial working | Pulls NYC DOT Traffic Speeds rows from Socrata/SODA by matched `link_id` or paginated full feed | in-memory DOT traffic records; cache planned |
+| Local Matching Service | Initial working | Compares OSRM route geometry to DOT `link_points` locally and binds DOT `link_id`s to matrix cells | enriched `edge_metadata.json` |
+| Traffic Snapshot Builder | Initial working | Loops edge metadata through fixture or DOT edge-state fetchers, applies EMA, and builds `TrafficSnapshot` multipliers | in-memory `TrafficSnapshot` |
 | Traffic Cache/EMA Persistence | Planned | Persists previous smoothed traffic values for future EMA updates | planned `data/traffic_cache.json` |
 | Solver Service | Working | Brute-force stop order search from fixed depot index `0`, retaining top-K routes | ranked `RouteResult`s |
 | Maps/Itinerary Output | Working | Prints ranked stops, total duration, and Google Maps deep links | terminal output |
@@ -90,9 +90,10 @@ data/stops.json
 
 NYC DOT Socrata API
   -> DOT Traffic Fetcher
-  -> data/dot_traffic_cache.json
+  -> in-memory DOT traffic records
+  -> planned data/dot_traffic_cache.json
 
-data/edge_metadata.json + data/dot_traffic_cache.json
+data/edge_metadata.json + DOT traffic rows/cache
   -> Local Matching Service
   -> matrix edge -> []DOT link_id bindings
 
@@ -178,12 +179,26 @@ go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
   -matrix data/matrix.json
 
-# 5. Solve using fake/demo edge traffic fixture + EMA
+# 5. Enrich edge metadata with local DOT link matches
+go run ./cmd/route-optimizer match-edges \
+  -edge-metadata data/edge_metadata.json \
+  -out data/edge_metadata_matched.json \
+  -dot-app-token "$SOCRATA_APP_TOKEN"
+
+# 6. Solve using fake/demo edge traffic fixture + EMA
 go run ./cmd/route-optimizer itinerary \
   -stops data/stops.json \
   -matrix data/matrix.json \
   -edge-metadata data/edge_metadata.json \
   -edge-state-fixture pepsi/testdata/edge_state_fixture.json
+
+# 7. Solve using live DOT traffic for matched edges
+go run ./cmd/route-optimizer itinerary \
+  -stops data/stops.json \
+  -matrix data/matrix.json \
+  -edge-metadata data/edge_metadata_matched.json \
+  -dot-traffic \
+  -dot-app-token "$SOCRATA_APP_TOKEN"
 
 # Rebuild matrix before solving
 go run ./cmd/route-optimizer itinerary \
@@ -198,9 +213,6 @@ Planned commands:
 go run ./cmd/route-optimizer refresh-traffic \
   -stops data/stops.json \
   -edges data/edge_metadata.json
-
-# Solve using live DOT-backed traffic cache
-# (same itinerary path, but the edge-state source will become DOT-backed)
 ```
 
 ## Repository Layout
@@ -238,20 +250,24 @@ Working:
 - `pepsi` traffic snapshot loop from edge metadata to EMA-smoothed adjusted matrix.
 - Fixture-backed edge-state fetcher for fake/demo traffic flows.
 - Itinerary fixture traffic flags for solving against an adjusted in-memory matrix.
+- DOT/Socrata edge-state fetcher for edges that already have `matched_dot_link_ids`.
+- Local DOT matcher that fills `matched_dot_link_ids` from OSRM geometry and DOT
+  `link_points`.
+- Match-edges command for writing enriched edge metadata.
+- Itinerary DOT traffic flags for solving against a live DOT-adjusted in-memory matrix.
 - YAML traffic fixture loader.
 
 WIP/planned:
 
-- DOT/Socrata fetcher.
-- Local OSRM geometry to DOT `link_id` matcher.
+- Match tuning/debug output for explaining why links did or did not match.
 - EMA-backed traffic cache.
-- `itinerary` traffic overlay flags.
 - Packaging matrix and solver boundaries.
 
 Known dev note:
 
 - The `pepsi` package is compile-safe and can build `edge_metadata.json`.
-  DOT matching and traffic overlay integration are still planned.
+  DOT traffic can now be fetched and matched locally, but the matching thresholds
+  are still demo-grade and should be inspected on real routes.
 
 ## Testing
 
