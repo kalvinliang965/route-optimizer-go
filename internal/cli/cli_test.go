@@ -10,856 +10,193 @@ import (
 	"strings"
 	"testing"
 
-	"route-optimizer-go/internal/route"
-	"route-optimizer-go/pepsi"
+	"route-optimizer-go/internal/optimizer"
+	"route-optimizer-go/internal/planner"
+	"route-optimizer-go/internal/storage"
 )
 
-func TestRunAllCommandRunsPipeline(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	addressesPath := filepath.Join(tempDir, "demo-addresses.txt")
-	stopsPath := filepath.Join(tempDir, "artifacts", "stops.json")
-	matrixPath := filepath.Join(tempDir, "artifacts", "matrix.json")
-	geocodeCachePath := filepath.Join(tempDir, "cache", "geocode.json")
-	matrixCachePath := filepath.Join(tempDir, "cache", "matrix.json")
-
-	config := fmt.Sprintf(`
-solver:
-  top_k: 2
-  max_stops: 5
-cache:
-  geocode_file: %q
-  matrix_file: %q
-http:
-  geocode_timeout_sec: 5
-  osrm_timeout_sec: 10
-  user_agent: "cli-all-test"
-output:
-  duration_unit: minutes
-`, geocodeCachePath, matrixCachePath)
-	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	addresses := []string{"Demo Depot", "Demo Stop A", "Demo Stop B"}
-	if err := os.WriteFile(addressesPath, []byte(strings.Join(addresses, "\n")), 0644); err != nil {
-		t.Fatalf("write addresses: %v", err)
-	}
-
-	stops := []route.Stop{
-		{Name: "Depot", Lat: 40.700001, Lon: -73.900001},
-		{Name: "Stop A", Lat: 40.710001, Lon: -73.910001},
-		{Name: "Stop B", Lat: 40.720001, Lon: -73.920001},
-	}
-	geocodeCache := route.GeocodeCache{
-		addresses[0]: stops[0],
-		addresses[1]: stops[1],
-		addresses[2]: stops[2],
-	}
-	if err := route.WriteJSON(geocodeCachePath, geocodeCache); err != nil {
-		t.Fatalf("write geocode cache: %v", err)
-	}
-
-	durations := [][]float64{
-		{0, 1, 8},
-		{5, 0, 1},
-		{5, 4, 0},
-	}
-	matrixCache := make(route.MatrixCache)
-	for i, from := range stops {
-		fromKey := fmt.Sprintf("%.6f, %.6f", from.Lat, from.Lon)
-		matrixCache[fromKey] = make(map[string]float64)
-		for j, to := range stops {
-			if i == j {
-				continue
-			}
-			toKey := fmt.Sprintf("%.6f, %.6f", to.Lat, to.Lon)
-			matrixCache[fromKey][toKey] = durations[i][j]
+func TestRunArgsHelp(t *testing.T) {
+	output := captureStdout(t, func() {
+		if err := RunArgs(nil); err != nil {
+			t.Fatalf("RunArgs: %v", err)
+		}
+	})
+	for _, want := range []string{"route-optimizer all", "optimize", "-top-k 5"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help missing %q:\n%s", want, output)
 		}
 	}
-	if err := route.WriteJSON(matrixCachePath, matrixCache); err != nil {
-		t.Fatalf("write matrix cache: %v", err)
+}
+
+func TestOptimizeUsesVariableTopK(t *testing.T) {
+	directory := t.TempDir()
+	configPath := writeTestConfig(t, directory, "", "")
+	stopsPath := filepath.Join(directory, "stops.json")
+	matrixPath := filepath.Join(directory, "matrix.json")
+	planPath := filepath.Join(directory, "optimization.json")
+	stops := []optimizer.Stop{{Name: "Depot"}, {Name: "A"}, {Name: "B"}}
+	durations := optimizer.Matrix{{0, 1, 5}, {4, 0, 1}, {1, 5, 0}}
+	if err := storage.WriteJSON(stopsPath, stops); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.WriteJSON(matrixPath, durations); err != nil {
+		t.Fatal(err)
 	}
 
 	output := captureStdout(t, func() {
+		err := RunArgs([]string{"optimize", "-config", configPath, "-stops", stopsPath, "-matrix", matrixPath, "-out", planPath, "-top-k", "2"})
+		if err != nil {
+			t.Fatalf("RunArgs: %v", err)
+		}
+	})
+	if !strings.Contains(output, "Top 2 route(s)") || !strings.Contains(output, "#1  0.05 mins") {
+		t.Fatalf("output:\n%s", output)
+	}
+	if strings.Contains(output, "https://www.google.com/maps/dir/") {
+		t.Fatalf("optimize should not build Maps links:\n%s", output)
+	}
+	var result planner.OptimizeResult
+	if err := storage.ReadJSON(planPath, &result); err != nil {
+		t.Fatalf("read optimization result: %v", err)
+	}
+	if len(result.Routes) != 2 || result.Routes[0].DirectionsURL != "" {
+		t.Fatalf("optimization result = %#v", result)
+	}
+}
+
+func TestItineraryReadsPlanAndBuildsSelectedMapsRoute(t *testing.T) {
+	directory := t.TempDir()
+	configPath := writeTestConfig(t, directory, "", "")
+	planPath := filepath.Join(directory, "optimization.json")
+	result := planner.OptimizeResult{
+		Stops: []optimizer.Stop{{Name: "Depot", Lat: 40, Lon: -73}, {Name: "A", Lat: 41, Lon: -74}},
+		TopK:  2,
+		Routes: []planner.PlannedRoute{
+			{Rank: 1, Path: []int{0, 1, 0}, OrderedStops: []optimizer.Stop{{Name: "Depot"}, {Name: "A"}, {Name: "Depot"}}, DurationSeconds: 120},
+			{Rank: 2, Path: []int{0, 1, 0}, OrderedStops: []optimizer.Stop{{Name: "Depot"}, {Name: "A"}, {Name: "Depot"}}, DurationSeconds: 180},
+		},
+	}
+	if err := storage.WriteJSON(planPath, result); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := RunArgs([]string{"itinerary", "-config", configPath, "-plan", planPath, "-rank", "2"}); err != nil {
+			t.Fatalf("RunArgs: %v", err)
+		}
+	})
+	if strings.Contains(output, "#1") || !strings.Contains(output, "#2  3.00 mins") {
+		t.Fatalf("itinerary selected wrong rank:\n%s", output)
+	}
+	if strings.Count(output, "https://www.google.com/maps/dir/") != 1 {
+		t.Fatalf("expected one Maps link:\n%s", output)
+	}
+}
+
+func TestAllRunsThroughPlannerAndAdapters(t *testing.T) {
+	directory := t.TempDir()
+	addressesPath := filepath.Join(directory, "addresses.txt")
+	if err := os.WriteFile(addressesPath, []byte("Depot\nStop A\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	geocodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("q")
+		lat, lon := "40.000000", "-73.000000"
+		if name == "Stop A" {
+			lat, lon = "40.100000", "-73.100000"
+		}
+		_, _ = fmt.Fprintf(w, `[{"display_name":%q,"lat":%q,"lon":%q}]`, name, lat, lon)
+	}))
+	defer geocodeServer.Close()
+
+	matrixServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":"Ok","durations":[[0,60],[90,0]]}`))
+	}))
+	defer matrixServer.Close()
+
+	configPath := writeTestConfig(t, directory, geocodeServer.URL, matrixServer.URL)
+	stopsPath := filepath.Join(directory, "artifacts", "stops.json")
+	matrixPath := filepath.Join(directory, "artifacts", "matrix.json")
+	planPath := filepath.Join(directory, "artifacts", "optimization.json")
+	output := captureStdout(t, func() {
 		err := RunArgs([]string{
-			"all",
-			"-config", configPath,
-			"-stops-out", stopsPath,
-			"-matrix-out", matrixPath,
+			"all", "-config", configPath, "-top-k", "1",
+			"-stops-out", stopsPath, "-matrix-out", matrixPath, "-plan-out", planPath,
 			addressesPath,
 		})
 		if err != nil {
-			t.Fatalf("RunArgs all: %v", err)
+			t.Fatalf("RunArgs: %v", err)
 		}
 	})
-
-	for _, want := range []string{
-		"all: geocode → matrix → itinerary",
-		"geocode: wrote " + stopsPath,
-		"matrix: wrote " + matrixPath,
-		"itinerary: solving top 2",
-		"1. Depot",
-		"2. Stop A",
-		"3. Stop B",
-		"all: complete",
-	} {
+	for _, want := range []string{"addresses → geocode → matrix", "Top 1 route(s)", "2.50 mins", "all: wrote"} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("all output missing %q:\n%s", want, output)
+			t.Fatalf("output missing %q:\n%s", want, output)
 		}
 	}
-
-	var gotStops []route.Stop
-	if err := route.ReadJSON(stopsPath, &gotStops); err != nil {
-		t.Fatalf("read stops artifact: %v", err)
+	var stops []optimizer.Stop
+	if err := storage.ReadJSON(stopsPath, &stops); err != nil || len(stops) != 2 {
+		t.Fatalf("stops artifact = %#v, err %v", stops, err)
 	}
-	if len(gotStops) != len(stops) {
-		t.Fatalf("stops artifact length = %d, want %d", len(gotStops), len(stops))
-	}
-
-	var gotMatrix [][]float64
-	if err := route.ReadJSON(matrixPath, &gotMatrix); err != nil {
-		t.Fatalf("read matrix artifact: %v", err)
-	}
-	if len(gotMatrix) != len(durations) || gotMatrix[0][1] != durations[0][1] {
-		t.Fatalf("matrix artifact = %#v, want %#v", gotMatrix, durations)
+	var result planner.OptimizeResult
+	if err := storage.ReadJSON(planPath, &result); err != nil || len(result.Routes) != 1 {
+		t.Fatalf("optimization artifact = %#v, err %v", result, err)
 	}
 }
 
-func TestRunAllCommandBuildsAndAppliesDOTTraffic(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	addressesPath := filepath.Join(tempDir, "demo-addresses.txt")
-	stopsPath := filepath.Join(tempDir, "artifacts", "stops.json")
-	matrixPath := filepath.Join(tempDir, "artifacts", "matrix.json")
-	edgeMetadataPath := filepath.Join(tempDir, "artifacts", "edge_metadata.json")
-	matchedEdgeMetadataPath := filepath.Join(tempDir, "artifacts", "edge_metadata_matched.json")
-	geocodeCachePath := filepath.Join(tempDir, "cache", "geocode.json")
-	matrixCachePath := filepath.Join(tempDir, "cache", "matrix.json")
-
-	config := fmt.Sprintf(`
-solver:
-  top_k: 1
-  max_stops: 5
-cache:
-  geocode_file: %q
-  matrix_file: %q
-http:
-  geocode_timeout_sec: 5
-  osrm_timeout_sec: 10
-  user_agent: "cli-all-dot-test"
-output:
-  duration_unit: minutes
-`, geocodeCachePath, matrixCachePath)
-	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	addresses := []string{"Demo Depot", "Demo Stop"}
-	if err := os.WriteFile(addressesPath, []byte(strings.Join(addresses, "\n")), 0644); err != nil {
-		t.Fatalf("write addresses: %v", err)
-	}
-	stops := []route.Stop{
-		{Name: "Depot", Lat: 40.000000, Lon: -73.000000},
-		{Name: "Stop", Lat: 40.001000, Lon: -73.001000},
-	}
-	if err := route.WriteJSON(geocodeCachePath, route.GeocodeCache{
-		addresses[0]: stops[0],
-		addresses[1]: stops[1],
-	}); err != nil {
-		t.Fatalf("write geocode cache: %v", err)
-	}
-	matrixCache := route.MatrixCache{
-		"40.000000, -73.000000": {"40.001000, -73.001000": 60},
-		"40.001000, -73.001000": {"40.000000, -73.000000": 60},
-	}
-	if err := route.WriteJSON(matrixCachePath, matrixCache); err != nil {
-		t.Fatalf("write matrix cache: %v", err)
-	}
-
-	osrmRequestCount := 0
-	osrmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		osrmRequestCount++
-		if got := r.Header.Get("User-Agent"); got != "cli-all-dot-test" {
-			t.Errorf("OSRM User-Agent = %q, want cli-all-dot-test", got)
-		}
-		switch r.URL.Path {
-		case "/route/v1/driving/-73.000000,40.000000;-73.001000,40.001000":
-			_, _ = w.Write([]byte(cliOSRMRouteJSON(stops[0], stops[1], "forward")))
-		case "/route/v1/driving/-73.001000,40.001000;-73.000000,40.000000":
-			_, _ = w.Write([]byte(cliOSRMRouteJSON(stops[1], stops[0], "reverse")))
-		default:
-			t.Errorf("unexpected OSRM path: %s", r.URL.Path)
-			http.Error(w, "unexpected path", http.StatusNotFound)
-		}
-	}))
-	defer osrmServer.Close()
-
-	recentDOTRequests := 0
-	filteredDOTRequests := 0
-	dotServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-App-Token"); got != "test-token" {
-			t.Errorf("DOT X-App-Token = %q, want test-token", got)
-		}
-		if got := r.Header.Get("User-Agent"); got != "cli-all-dot-test" {
-			t.Errorf("DOT User-Agent = %q, want cli-all-dot-test", got)
-		}
-		where := r.URL.Query().Get("$where")
-		if where == "" {
-			recentDOTRequests++
-			if got := r.URL.Query().Get("$limit"); got != "1000" {
-				t.Errorf("recent DOT $limit = %q, want 1000", got)
-			}
-			if got := r.URL.Query().Get("$select"); got != "link_id,data_as_of,link_points" {
-				t.Errorf("recent DOT $select = %q", got)
-			}
-			if got := r.URL.Query().Get("$order"); got != "data_as_of DESC,link_id ASC" {
-				t.Errorf("recent DOT $order = %q", got)
-			}
-		} else {
-			filteredDOTRequests++
-			if where != "link_id in('dot-demo')" {
-				t.Errorf("filtered DOT $where = %q", where)
-			}
-			if got := r.URL.Query().Get("$select"); got != "link_id,speed,data_as_of" {
-				t.Errorf("filtered DOT $select = %q", got)
-			}
-		}
-		_, _ = w.Write([]byte(`[
-			{"link_id":"dot-demo","speed":"5","data_as_of":"2026-08-05T12:00:00","link_points":"40.000100,-73.000100 40.000900,-73.000900"}
-		]`))
-	}))
-	defer dotServer.Close()
-
-	// Invalid existing files prove that all warns and rebuilds rather than
-	// trying to trust or scan stale edge metadata.
-	if err := os.MkdirAll(filepath.Dir(edgeMetadataPath), 0755); err != nil {
-		t.Fatalf("make artifacts directory: %v", err)
-	}
-	if err := os.WriteFile(edgeMetadataPath, []byte("stale raw metadata"), 0644); err != nil {
-		t.Fatalf("write stale edge metadata: %v", err)
-	}
-	if err := os.WriteFile(matchedEdgeMetadataPath, []byte("stale matched metadata"), 0644); err != nil {
-		t.Fatalf("write stale matched metadata: %v", err)
-	}
-
-	var output string
-	warnings := captureStderr(t, func() {
-		output = captureStdout(t, func() {
-			err := RunArgs([]string{
-				"all",
-				"-config", configPath,
-				"-stops-out", stopsPath,
-				"-matrix-out", matrixPath,
-				"-dot-traffic",
-				"-edge-metadata-out", edgeMetadataPath,
-				"-matched-edge-metadata-out", matchedEdgeMetadataPath,
-				"-osrm-base-url", osrmServer.URL,
-				"-dot-endpoint", dotServer.URL,
-				"-dot-app-token", "test-token",
-				addressesPath,
-			})
-			if err != nil {
-				t.Fatalf("RunArgs all -dot-traffic: %v", err)
-			}
-		})
-	})
-
-	if osrmRequestCount != 2 {
-		t.Fatalf("OSRM request count = %d, want 2", osrmRequestCount)
-	}
-	if recentDOTRequests != 1 || filteredDOTRequests != 1 {
-		t.Fatalf("DOT requests = recent %d, filtered %d; want 1 and 1", recentDOTRequests, filteredDOTRequests)
-	}
-	for _, want := range []string{
-		"all: geocode → matrix → edge-metadata → match-edges → traffic-aware itinerary",
-		"edge-metadata: wrote " + edgeMetadataPath,
-		"match-edges: matched 2/2 edges",
-		"itinerary: applied DOT traffic",
-		"(2 edge multipliers; current snapshot, no persisted EMA history)",
-		"all: complete",
-	} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("traffic all output missing %q:\n%s", want, output)
-		}
-	}
-	for _, path := range []string{edgeMetadataPath, matchedEdgeMetadataPath} {
-		if !strings.Contains(warnings, path+" already exists; rebuilding and replacing it after the stage succeeds") {
-			t.Fatalf("warnings missing replacement warning for %s:\n%s", path, warnings)
-		}
-	}
-
-	rawMetadata, err := pepsi.ReadEdgeMetadata(edgeMetadataPath)
-	if err != nil {
-		t.Fatalf("read rebuilt edge metadata: %v", err)
-	}
-	if len(rawMetadata.Edges) != 2 {
-		t.Fatalf("raw edge count = %d, want 2", len(rawMetadata.Edges))
-	}
-	matchedMetadata, err := pepsi.ReadEdgeMetadata(matchedEdgeMetadataPath)
-	if err != nil {
-		t.Fatalf("read rebuilt matched edge metadata: %v", err)
-	}
-	if len(matchedMetadata.Edges) != 2 {
-		t.Fatalf("matched edge count = %d, want 2", len(matchedMetadata.Edges))
-	}
-	for _, edge := range matchedMetadata.Edges {
-		if len(edge.MatchedDOTLinkIDs) != 1 || edge.MatchedDOTLinkIDs[0] != "dot-demo" {
-			t.Fatalf("edge %d -> %d matched IDs = %#v, want dot-demo",
-				edge.FromStop, edge.ToStop, edge.MatchedDOTLinkIDs)
-		}
+func TestRunArgsRejectsUnknownCommand(t *testing.T) {
+	err := RunArgs([]string{"traffic"})
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestRunArgsRejectsTwoAllAddressInputs(t *testing.T) {
-	err := RunArgs([]string{"all", "-addresses", "first.txt", "second.txt"})
-	if err == nil || !strings.Contains(err.Error(), "both positionally") {
-		t.Fatalf("RunArgs error = %v, want duplicate addresses input error", err)
-	}
-}
-
-func TestRunArgsTopLevelHelp(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{name: "no arguments"},
-		{name: "short flag", args: []string{"-h"}},
-		{name: "long flag", args: []string{"--help"}},
-		{name: "help command", args: []string{"help"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			output := captureStdout(t, func() {
-				if err := RunArgs(tt.args); err != nil {
-					t.Fatalf("RunArgs(%v): %v", tt.args, err)
-				}
-			})
-			for _, want := range []string{"Usage:", "route-optimizer all", "route-optimizer all -dot-traffic", "route-optimizer help [command]"} {
-				if !strings.Contains(output, want) {
-					t.Fatalf("help output missing %q:\n%s", want, output)
-				}
-			}
-		})
-	}
-}
-
-func TestRunArgsCommandHelp(t *testing.T) {
-	tests := []struct {
-		name  string
-		args  []string
-		wants []string
-	}{
-		{
-			name:  "help topic",
-			args:  []string{"help", "itinerary"},
-			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
-		},
-		{
-			name:  "long command flag",
-			args:  []string{"itinerary", "--help"},
-			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
-		},
-		{
-			name:  "short command flag",
-			args:  []string{"itinerary", "-h"},
-			wants: []string{"route-optimizer itinerary [flags]", "top-K round trips", "-dot-traffic"},
-		},
-		{
-			name:  "all help topic",
-			args:  []string{"help", "all"},
-			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out", "-dot-traffic", "-dot-match-limit", "-edge-metadata-out"},
-		},
-		{
-			name:  "all help flag",
-			args:  []string{"all", "--help"},
-			wants: []string{"route-optimizer all [flags] [addresses-file]", "-addresses", "-matrix-out", "-dot-traffic", "-matched-edge-metadata-out"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			output := captureStdout(t, func() {
-				if err := RunArgs(tt.args); err != nil {
-					t.Fatalf("RunArgs(%v): %v", tt.args, err)
-				}
-			})
-			for _, want := range tt.wants {
-				if !strings.Contains(output, want) {
-					t.Fatalf("command help for %v missing %q:\n%s", tt.args, want, output)
-				}
-			}
-		})
-	}
-}
-
-func TestRunArgsUnknownCommandReturnsError(t *testing.T) {
-	for _, command := range []string{"itineray", "examples/addresses.txt"} {
-		t.Run(command, func(t *testing.T) {
-			var gotErr error
-			output := captureStderr(t, func() {
-				gotErr = RunArgs([]string{command})
-			})
-			if gotErr == nil || !strings.Contains(gotErr.Error(), "unknown command") {
-				t.Fatalf("RunArgs error = %v, want unknown command error", gotErr)
-			}
-			if !strings.Contains(output, "Usage:") {
-				t.Fatalf("stderr missing usage after unknown command:\n%s", output)
-			}
-		})
-	}
-}
-
-func TestRunArgsBadFlagReturnsHelpfulError(t *testing.T) {
-	for _, command := range []string{"all", "matrix"} {
-		err := RunArgs([]string{command, "--definitely-invalid"})
-		if err == nil {
-			t.Fatalf("RunArgs returned nil for an invalid %s flag", command)
-		}
-		for _, want := range []string{"parse " + command + " flags", "help " + command} {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("invalid flag error missing %q: %v", want, err)
-			}
-		}
-	}
-}
-
-func TestRunArgsRejectsUnexpectedCommandPositionals(t *testing.T) {
-	err := RunArgs([]string{"matrix", "unexpected.json"})
-	if err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
-		t.Fatalf("RunArgs error = %v, want unexpected positional argument error", err)
-	}
-}
-
-func TestRunArgsRejectsUnknownHelpTopic(t *testing.T) {
-	var gotErr error
-	output := captureStderr(t, func() {
-		gotErr = RunArgs([]string{"help", "solve-everything"})
-	})
-	if gotErr == nil || !strings.Contains(gotErr.Error(), "unknown help topic") {
-		t.Fatalf("RunArgs error = %v, want unknown help topic error", gotErr)
-	}
-	if !strings.Contains(output, "Usage:") {
-		t.Fatalf("stderr missing usage after unknown help topic:\n%s", output)
-	}
-}
-
-func TestRunItineraryAppliesEdgeStateFixture(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	stopsPath := filepath.Join(tempDir, "stops.json")
-	matrixPath := filepath.Join(tempDir, "matrix.json")
-	edgeMetadataPath := filepath.Join(tempDir, "edge_metadata.json")
-	edgeStateFixturePath := filepath.Join(tempDir, "edge_state_fixture.json")
-
-	if err := os.WriteFile(configPath, []byte(itineraryTrafficTestConfig), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	stops := []route.Stop{
-		{Name: "Depot", Lat: 40.0, Lon: -73.0},
-		{Name: "Stop A", Lat: 40.1, Lon: -73.1},
-		{Name: "Stop B", Lat: 40.2, Lon: -73.2},
-	}
-	if err := route.WriteJSON(stopsPath, stops); err != nil {
-		t.Fatalf("write stops: %v", err)
-	}
-
-	matrix := [][]float64{
-		{0, 10, 5},
-		{10, 0, 10},
-		{5, 5, 0},
-	}
-	if err := route.WriteJSON(matrixPath, matrix); err != nil {
-		t.Fatalf("write matrix: %v", err)
-	}
-
-	metadata := pepsi.EdgeMetadataFile{
-		Source: pepsi.EdgeMetadataSource,
-		Edges: []pepsi.EdgeMetadata{
-			{FromStop: 0, ToStop: 2},
-			{FromStop: 2, ToStop: 1},
-		},
-	}
-	if err := pepsi.WriteEdgeMetadata(edgeMetadataPath, metadata); err != nil {
-		t.Fatalf("write edge metadata: %v", err)
-	}
-
-	fixtureJSON := `{
-		"edges": [
-			{"from_stop": 0, "to_stop": 2, "current_multiplier": 10.0},
-			{"from_stop": 2, "to_stop": 1, "current_multiplier": 10.0}
-		]
-	}`
-	if err := os.WriteFile(edgeStateFixturePath, []byte(fixtureJSON), 0644); err != nil {
-		t.Fatalf("write edge state fixture: %v", err)
-	}
-
-	output := captureStdout(t, func() {
-		err := Run("itinerary", []string{
-			"-config", configPath,
-			"-stops", stopsPath,
-			"-matrix", matrixPath,
-			"-edge-metadata", edgeMetadataPath,
-			"-edge-state-fixture", edgeStateFixturePath,
-			"-traffic-ema-alpha", "1",
-			"-traffic-max-multiplier", "10",
-		})
-		if err != nil {
-			t.Fatalf("Run itinerary: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "applied traffic fixture") {
-		t.Fatalf("output missing traffic fixture banner:\n%s", output)
-	}
-	if !strings.Contains(output, "#1  0.42 mins") {
-		t.Fatalf("output missing adjusted best duration:\n%s", output)
-	}
-	stopA := strings.Index(output, "Stop A")
-	stopB := strings.Index(output, "Stop B")
-	if stopA == -1 || stopB == -1 || stopA > stopB {
-		t.Fatalf("output route order should visit Stop A before Stop B:\n%s", output)
-	}
-}
-
-func TestRunItineraryAppliesDOTTraffic(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	stopsPath := filepath.Join(tempDir, "stops.json")
-	matrixPath := filepath.Join(tempDir, "matrix.json")
-	edgeMetadataPath := filepath.Join(tempDir, "edge_metadata.json")
-
-	if err := os.WriteFile(configPath, []byte(itineraryTrafficTestConfig), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	stops := []route.Stop{
-		{Name: "Depot", Lat: 40.0, Lon: -73.0},
-		{Name: "Stop A", Lat: 40.1, Lon: -73.1},
-		{Name: "Stop B", Lat: 40.2, Lon: -73.2},
-	}
-	if err := route.WriteJSON(stopsPath, stops); err != nil {
-		t.Fatalf("write stops: %v", err)
-	}
-
-	matrix := [][]float64{
-		{0, 10, 5},
-		{10, 0, 10},
-		{5, 5, 0},
-	}
-	if err := route.WriteJSON(matrixPath, matrix); err != nil {
-		t.Fatalf("write matrix: %v", err)
-	}
-
-	metadata := pepsi.EdgeMetadataFile{
-		Source: pepsi.EdgeMetadataSource,
-		Edges: []pepsi.EdgeMetadata{
-			{
-				FromStop:            0,
-				ToStop:              2,
-				BaselineDurationSec: 60,
-				BaselineDistanceM:   1609.344,
-				MatchedDOTLinkIDs:   []string{"dot-slow-1"},
-			},
-			{
-				FromStop:            2,
-				ToStop:              1,
-				BaselineDurationSec: 60,
-				BaselineDistanceM:   1609.344,
-				MatchedDOTLinkIDs:   []string{"dot-slow-2"},
-			},
-		},
-	}
-	if err := pepsi.WriteEdgeMetadata(edgeMetadataPath, metadata); err != nil {
-		t.Fatalf("write edge metadata: %v", err)
-	}
-
-	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		if got := r.Header.Get("X-App-Token"); got != "test-token" {
-			t.Fatalf("X-App-Token = %q, want test-token", got)
-		}
-		if got := r.Header.Get("User-Agent"); got != "cli-test-agent" {
-			t.Fatalf("User-Agent = %q, want cli-test-agent", got)
-		}
-		if got := r.URL.Query().Get("$where"); got != "link_id in('dot-slow-1','dot-slow-2')" {
-			t.Fatalf("$where = %q", got)
-		}
-		if got := r.URL.Query().Get("$limit"); got != "2" {
-			t.Fatalf("$limit = %q, want 2", got)
-		}
-		w.Write([]byte(`[
-			{"link_id":"dot-slow-1","speed":"6","data_as_of":"2026-08-05T12:00:00"},
-			{"link_id":"dot-slow-2","speed":"6","data_as_of":"2026-08-05T12:00:00"}
-		]`))
-	}))
-	defer server.Close()
-
-	output := captureStdout(t, func() {
-		err := Run("itinerary", []string{
-			"-config", configPath,
-			"-stops", stopsPath,
-			"-matrix", matrixPath,
-			"-edge-metadata", edgeMetadataPath,
-			"-dot-traffic",
-			"-dot-endpoint", server.URL,
-			"-dot-app-token", "test-token",
-			"-dot-limit-per-link", "1",
-			"-traffic-ema-alpha", "1",
-			"-traffic-max-multiplier", "10",
-		})
-		if err != nil {
-			t.Fatalf("Run itinerary: %v", err)
-		}
-	})
-
-	if requestCount != 1 {
-		t.Fatalf("request count = %d, want 1", requestCount)
-	}
-	if !strings.Contains(output, "applied DOT traffic") {
-		t.Fatalf("output missing DOT traffic banner:\n%s", output)
-	}
-	if !strings.Contains(output, "#1  0.42 mins") {
-		t.Fatalf("output missing adjusted best duration:\n%s", output)
-	}
-	stopA := strings.Index(output, "Stop A")
-	stopB := strings.Index(output, "Stop B")
-	if stopA == -1 || stopB == -1 || stopA > stopB {
-		t.Fatalf("output route order should visit Stop A before Stop B:\n%s", output)
-	}
-}
-
-func TestRunEdgeMetadataWritesArtifact(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	stopsPath := filepath.Join(tempDir, "stops.json")
-	outPath := filepath.Join(tempDir, "edge_metadata.json")
-
-	if err := os.WriteFile(configPath, []byte(edgeMetadataTestConfig), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	stops := []route.Stop{
-		{Name: "Depot", Lat: 40.729661, Lon: -73.974688},
-		{Name: "Times Square", Lat: 40.757010, Lon: -73.985972},
-	}
-	if err := route.WriteJSON(stopsPath, stops); err != nil {
-		t.Fatalf("write stops: %v", err)
-	}
-
-	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		switch r.URL.Path {
-		case "/route/v1/driving/-73.974688,40.729661;-73.985972,40.757010":
-			w.Write([]byte(cliOSRMRouteJSON(stops[0], stops[1], "forward")))
-		case "/route/v1/driving/-73.985972,40.757010;-73.974688,40.729661":
-			w.Write([]byte(cliOSRMRouteJSON(stops[1], stops[0], "reverse")))
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	err := Run("edge-metadata", []string{
-		"-config", configPath,
-		"-stops", stopsPath,
-		"-out", outPath,
-		"-osrm-base-url", server.URL,
-	})
-	if err != nil {
-		t.Fatalf("Run edge-metadata: %v", err)
-	}
-	if requestCount != 2 {
-		t.Fatalf("request count = %d, want 2", requestCount)
-	}
-
-	artifact, err := pepsi.ReadEdgeMetadata(outPath)
-	if err != nil {
-		t.Fatalf("ReadEdgeMetadata: %v", err)
-	}
-	if artifact.Source != pepsi.EdgeMetadataSource {
-		t.Fatalf("source = %q, want %q", artifact.Source, pepsi.EdgeMetadataSource)
-	}
-	if len(artifact.Edges) != 2 {
-		t.Fatalf("edges length = %d, want 2", len(artifact.Edges))
-	}
-	if artifact.Edges[0].FromStop != 0 || artifact.Edges[0].ToStop != 1 {
-		t.Fatalf("first edge = %d -> %d, want 0 -> 1", artifact.Edges[0].FromStop, artifact.Edges[0].ToStop)
-	}
-	if artifact.Edges[1].FromStop != 1 || artifact.Edges[1].ToStop != 0 {
-		t.Fatalf("second edge = %d -> %d, want 1 -> 0", artifact.Edges[1].FromStop, artifact.Edges[1].ToStop)
-	}
-}
-
-func TestRunMatchEdgesWritesMatchedMetadata(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-	edgeMetadataPath := filepath.Join(tempDir, "edge_metadata.json")
-	dotFixturePath := filepath.Join(tempDir, "dot_records.json")
-	outPath := filepath.Join(tempDir, "edge_metadata_matched.json")
-
-	if err := os.WriteFile(configPath, []byte(edgeMetadataTestConfig), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	metadata := pepsi.EdgeMetadataFile{
-		Source: pepsi.EdgeMetadataSource,
-		Edges: []pepsi.EdgeMetadata{
-			{
-				FromStop: 0,
-				ToStop:   1,
-				Geometry: []pepsi.Coordinate{
-					{Lat: 40.0000, Lon: -73.0000},
-					{Lat: 40.0010, Lon: -73.0010},
-				},
-			},
-		},
-	}
-	if err := pepsi.WriteEdgeMetadata(edgeMetadataPath, metadata); err != nil {
-		t.Fatalf("write edge metadata: %v", err)
-	}
-
-	records := []pepsi.DOTTrafficRecord{
-		{
-			LinkID:     "dot-near",
-			LinkPoints: "40.000100,-73.000100 40.000900,-73.000900",
-			DataAsOf:   "2026-08-05T12:00:00",
-		},
-		{
-			LinkID:     "dot-far",
-			LinkPoints: "40.010000,-73.010000 40.011000,-73.011000",
-			DataAsOf:   "2026-08-05T12:00:00",
-		},
-	}
-	if err := route.WriteJSON(dotFixturePath, records); err != nil {
-		t.Fatalf("write DOT fixture: %v", err)
-	}
-
-	output := captureStdout(t, func() {
-		err := Run("match-edges", []string{
-			"-config", configPath,
-			"-edge-metadata", edgeMetadataPath,
-			"-dot-fixture", dotFixturePath,
-			"-out", outPath,
-			"-match-max-distance-m", "25",
-			"-match-max-average-distance-m", "15",
-		})
-		if err != nil {
-			t.Fatalf("Run match-edges: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "matched 1/1 edges") {
-		t.Fatalf("output missing match summary:\n%s", output)
-	}
-
-	matched, err := pepsi.ReadEdgeMetadata(outPath)
-	if err != nil {
-		t.Fatalf("ReadEdgeMetadata: %v", err)
-	}
-	got := matched.Edges[0].MatchedDOTLinkIDs
-	if len(got) != 1 || got[0] != "dot-near" {
-		t.Fatalf("matched IDs = %#v, want dot-near", got)
-	}
-}
-
-const edgeMetadataTestConfig = `
-solver:
-  top_k: 5
-  max_stops: 15
-http:
-  geocode_timeout_sec: 5
-  osrm_timeout_sec: 10
-  user_agent: "cli-test-agent"
-output:
-  duration_unit: minutes
-`
-
-const itineraryTrafficTestConfig = `
-solver:
-  top_k: 1
-  max_stops: 15
-http:
-  geocode_timeout_sec: 5
-  osrm_timeout_sec: 10
-  user_agent: "cli-test-agent"
-output:
-  duration_unit: minutes
-`
-
-func cliOSRMRouteJSON(from, to route.Stop, stepName string) string {
-	return fmt.Sprintf(`{
-		"code": "Ok",
-		"routes": [{
-			"duration": 420.5,
-			"distance": 1800.25,
-			"geometry": {
-				"type": "LineString",
-				"coordinates": [
-					[%.6f, %.6f],
-					[%.6f, %.6f],
-					[%.6f, %.6f]
-				]
-			},
-			"legs": [{
-				"steps": [
-					{"name": %q, "duration": 420.5, "distance": 1800.25}
-				]
-			}]
-		}]
-	}`, from.Lon, from.Lat, (from.Lon+to.Lon)/2, (from.Lat+to.Lat)/2, to.Lon, to.Lat, stepName)
-}
-
-func captureStdout(t *testing.T, fn func()) string {
+func writeTestConfig(t *testing.T, directory, nominatimURL, osrmURL string) string {
 	t.Helper()
+	if nominatimURL == "" {
+		nominatimURL = "http://unused-nominatim"
+	}
+	if osrmURL == "" {
+		osrmURL = "http://unused-osrm"
+	}
+	path := filepath.Join(directory, "config.yaml")
+	content := fmt.Sprintf(`
+planner:
+  default_top_k: 5
+  max_top_k: 10
+  max_stops: 10
+providers:
+  nominatim_base_url: %q
+  osrm_base_url: %q
+http:
+  geocode_timeout_sec: 2
+  matrix_timeout_sec: 2
+  user_agent: "cli-test"
+output:
+  duration_unit: minutes
+`, nominatimURL, osrmURL)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
+func captureStdout(t *testing.T, function func()) string {
+	t.Helper()
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
+		t.Fatal(err)
 	}
 	os.Stdout = writer
-	defer func() {
-		os.Stdout = original
-	}()
-
-	fn()
-
+	defer func() { os.Stdout = original }()
+	function()
 	if err := writer.Close(); err != nil {
-		t.Fatalf("close writer: %v", err)
+		t.Fatal(err)
 	}
 	output, err := io.ReadAll(reader)
 	if err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	return string(output)
-}
-
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-
-	original := os.Stderr
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stderr = writer
-	defer func() {
-		os.Stderr = original
-	}()
-
-	fn()
-
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close writer: %v", err)
-	}
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("read stderr: %v", err)
+		t.Fatal(err)
 	}
 	return string(output)
 }

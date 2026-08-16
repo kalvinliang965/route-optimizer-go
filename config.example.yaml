@@ -1,37 +1,24 @@
-# Route optimizer configuration (example)
-# Usage: go run ./cmd/route-optimizer all -config config.yaml
-#        go run ./cmd/route-optimizer all -config config.yaml path/to/addresses.txt
-#        go run ./cmd/route-optimizer all -dot-traffic -config config.yaml path/to/addresses.txt
-#        # The second form supplies an addresses file positionally.
-# Address list can stay in a separate file, or be listed under input.addresses.
+# Route-order calculator configuration.
 
-solver:
-  # Return the top-K shortest round trips (depot fixed at index 0).
-  top_k: 5
-  # Hard cap on stop count (including depot). Brute-force is (n-1)! — keep this low.
-  max_stops: 15
+planner:
+  # Used when a CLI/API request does not specify top_k.
+  default_top_k: 5
+  # Protects the synchronous API response size.
+  max_top_k: 20
+  # Brute-force runtime is (n-1)!; keep this conservative.
+  max_stops: 10
 
-input:
-  # Path to newline-separated addresses (first line = depot).
-  addresses_file: addresses.txt
-  # Optional inline addresses (used if addresses_file is empty):
-  # addresses:
-  #   - "Grand Central Terminal, New York, NY"
-  #   - "Times Square, New York, NY"
-  #   - "Empire State Building, New York, NY"
-
-cache:
-  geocode_file: data/geocode_cache.json
-  matrix_file: data/matrix_cache.json
+providers:
+  nominatim_base_url: "https://nominatim.openstreetmap.org"
+  osrm_base_url: "http://router.project-osrm.org"
 
 http:
-  # Nominatim asks for ~1 req/s; keep timeouts modest.
   geocode_timeout_sec: 5
-  osrm_timeout_sec: 10
-  # DOT snapshot matching is a larger request than an OSRM route lookup.
-  dot_timeout_sec: 30
+  matrix_timeout_sec: 10
   user_agent: "GoRouteOptimizerApp/1.0 (student project)"
 
 output:
-  # Display unit for route totals (solver still works in seconds internally).
   duration_unit: minutes
+
+# The preserved NYC DOT traffic experiment is intentionally not part of the
+# active calculator configuration. See internal/deprecated/traffic/README.md.
