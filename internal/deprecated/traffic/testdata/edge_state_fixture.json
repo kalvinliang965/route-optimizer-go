@@ -1,0 +1,15 @@
+{
+  "edges": [
+    {
+      "from_stop": 0,
+      "to_stop": 1,
+      "current_multiplier": 1.8,
+      "previous_multiplier": 1.2
+    },
+    {
+      "from_stop": 1,
+      "to_stop": 0,
+      "current_multiplier": 1.1
+    }
+  ]
+}
