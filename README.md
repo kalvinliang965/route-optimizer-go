@@ -31,11 +31,13 @@ curl -i http://localhost:8080/healthz
 curl -sS http://localhost:8080/v1/config
 ```
 
-Stop the server with `Ctrl+C`. On Replit, omit `-addr :8080` so the server uses
-the platform's `PORT` value:
+Stop the server with `Ctrl+C`. On Replit, the committed `.replit` file makes the
+**Run** button start this same server on port `8080`. After clicking **Run**,
+open **Preview**, then use its **New tab** button to open the `.replit.dev` URL.
+You can also start it manually from the Replit Shell:
 
 ```bash
-go run ./cmd/route-server -config config.example.yaml
+go run ./cmd/route-server -addr :8080 -config config.example.yaml
 ```
 
 See [HTTP Server](#http-server) for complete `curl` examples.
@@ -196,11 +198,15 @@ Run it and open `http://localhost:8080`:
 go run ./cmd/route-server -addr :8080 -config config.example.yaml
 ```
 
-The server also honors Replit's `PORT` environment variable when `-addr` is not
-specified. Use an Autoscale or Reserved VM deployment because the application
-requires its Go API, rather than a Static deployment. Replit documents that a
-published app's filesystem is not persistent, so the disk cache is a warm-run
-optimization there and may reset on republish. See
+The committed `.replit` configuration makes Replit's **Run** button start the
+server and maps its local port `8080` to external HTTP port `80`. Open the
+automatically created **Preview**, then select **New tab** to use the full
+`.replit.dev` site. The server also honors Replit's `PORT` environment variable
+whenever `-addr` is not specified manually. Use an Autoscale or Reserved VM
+deployment because the application requires its Go API, rather than a Static
+deployment. Replit documents that a published app's filesystem is not
+persistent, so the disk cache is a warm-run optimization there and may reset on
+republish. See
 [Replit deployment troubleshooting](https://docs.replit.com/build/troubleshooting).
 
 ## Provider Caches
