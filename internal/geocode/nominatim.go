@@ -83,7 +83,11 @@ func (c *Nominatim) Geocode(ctx context.Context, address string) (optimizer.Stop
 	if err != nil {
 		return optimizer.Stop{}, fmt.Errorf("parse longitude %q: %w", results[0].Lon, err)
 	}
-	return optimizer.Stop{Name: results[0].DisplayName, Lat: lat, Lon: lon}, nil
+	stop := optimizer.Stop{Name: results[0].DisplayName, Lat: lat, Lon: lon}
+	if err := validateResolvedStop(stop); err != nil {
+		return optimizer.Stop{}, fmt.Errorf("invalid Nominatim result: %w", err)
+	}
+	return stop, nil
 }
 
 func (c *Nominatim) baseURL() string {

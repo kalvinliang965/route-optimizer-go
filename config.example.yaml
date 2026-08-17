@@ -10,7 +10,17 @@ planner:
 
 providers:
   nominatim_base_url: "https://nominatim.openstreetmap.org"
-  osrm_base_url: "http://router.project-osrm.org"
+  # Public demo endpoint; the app spaces its cache misses to at most one/second.
+  osrm_base_url: "https://router.project-osrm.org"
+
+cache:
+  # Cache successful geocodes and complete OSRM matrices under separate keys.
+  enabled: true
+  directory: "data/cache"
+  # Fixed addresses rarely move; retain successful resolutions for 90 days.
+  geocode_ttl_hours: 2160
+  # Fixed delivery sites change rarely; keep baseline matrices for 30 days.
+  matrix_ttl_hours: 720
 
 http:
   geocode_timeout_sec: 5

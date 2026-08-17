@@ -10,6 +10,12 @@ import (
 	"route-optimizer-go/internal/optimizer"
 )
 
+func TestDefaultOSRMBaseURLUsesHTTPS(t *testing.T) {
+	if !strings.HasPrefix(DefaultOSRMBaseURL, "https://") {
+		t.Fatalf("DefaultOSRMBaseURL = %q, want HTTPS", DefaultOSRMBaseURL)
+	}
+}
+
 func TestOSRMDurations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/table/v1/driving/-73.000000,40.000000;-73.100000,40.100000") {

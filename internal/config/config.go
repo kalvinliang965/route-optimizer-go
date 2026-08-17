@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Planner   PlannerConfig  `yaml:"planner"`
 	Providers ProviderConfig `yaml:"providers"`
+	Cache     CacheConfig    `yaml:"cache"`
 	HTTP      HTTPConfig     `yaml:"http"`
 	Output    OutputConfig   `yaml:"output"`
 }
@@ -24,6 +25,13 @@ type PlannerConfig struct {
 type ProviderConfig struct {
 	NominatimBaseURL string `yaml:"nominatim_base_url"`
 	OSRMBaseURL      string `yaml:"osrm_base_url"`
+}
+
+type CacheConfig struct {
+	Enabled         bool   `yaml:"enabled"`
+	Directory       string `yaml:"directory"`
+	GeocodeTTLHours int    `yaml:"geocode_ttl_hours"`
+	MatrixTTLHours  int    `yaml:"matrix_ttl_hours"`
 }
 
 type HTTPConfig struct {
@@ -41,7 +49,13 @@ func Default() Config {
 		Planner: PlannerConfig{DefaultTopK: 5, MaxTopK: 20, MaxStops: 10},
 		Providers: ProviderConfig{
 			NominatimBaseURL: "https://nominatim.openstreetmap.org",
-			OSRMBaseURL:      "http://router.project-osrm.org",
+			OSRMBaseURL:      "https://router.project-osrm.org",
+		},
+		Cache: CacheConfig{
+			Enabled:         true,
+			Directory:       "data/cache",
+			GeocodeTTLHours: 90 * 24,
+			MatrixTTLHours:  30 * 24,
 		},
 		HTTP: HTTPConfig{
 			GeocodeTimeoutSec: 5,
@@ -76,6 +90,17 @@ func (c Config) Validate() error {
 	}
 	if c.Planner.MaxStops < 1 {
 		return fmt.Errorf("planner.max_stops must be >= 1")
+	}
+	if c.Cache.Enabled {
+		if c.Cache.Directory == "" {
+			return fmt.Errorf("cache.directory is required when cache is enabled")
+		}
+		if c.Cache.GeocodeTTLHours < 1 {
+			return fmt.Errorf("cache.geocode_ttl_hours must be >= 1 when cache is enabled")
+		}
+		if c.Cache.MatrixTTLHours < 1 {
+			return fmt.Errorf("cache.matrix_ttl_hours must be >= 1 when cache is enabled")
+		}
 	}
 	if c.HTTP.GeocodeTimeoutSec < 1 || c.HTTP.MatrixTimeoutSec < 1 {
 		return fmt.Errorf("HTTP timeouts must be >= 1 second")

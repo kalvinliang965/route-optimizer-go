@@ -12,7 +12,7 @@ import (
 	"route-optimizer-go/internal/optimizer"
 )
 
-const DefaultOSRMBaseURL = "http://router.project-osrm.org"
+const DefaultOSRMBaseURL = "https://router.project-osrm.org"
 
 type OSRM struct {
 	BaseURL    string

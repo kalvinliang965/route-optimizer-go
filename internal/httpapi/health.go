@@ -2,7 +2,8 @@ package httpapi
 
 import "net/http"
 
-// check if server is still running
+// health reports whether the HTTP process can respond to requests.
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	_, _ = w.Write([]byte(`{status: "ok"}`))
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

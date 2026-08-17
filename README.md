@@ -12,7 +12,7 @@ between consecutive stops.
 ## Architecture
 
 ```text
-CLI or future HTTP handler
+CLI or browser/API handler
           |
           v
     planner.Service
@@ -28,15 +28,19 @@ CLI or future HTTP handler
 |---|---|
 | `internal/optimizer` | Pure models, matrix validation, and streaming top-K round-trip solver |
 | `internal/planner` | Application workflow and interfaces for external dependencies |
-| `internal/geocode` | Nominatim implementation of `planner.Geocoder` |
+| `internal/geocode` | Nominatim adapter with validation, caching, and public-service pacing |
 | `internal/matrix` | OSRM implementation of `planner.MatrixProvider` |
 | `internal/maps` | Google Maps execution-link builder |
 | `internal/config` | YAML process configuration |
-| `internal/storage` | CLI-only address and JSON artifact persistence |
+| `internal/cache` | Persistent, expiring provider cache entries |
+| `internal/app` | Shared CLI/server dependency construction |
+| `internal/storage` | Atomic local JSON persistence for artifacts and cache entries |
 | `internal/cli` | Thin command-line adapter over `planner.Service` |
-| `internal/httpapi` | Reserved transport boundary for the server exercise |
+| `internal/httpapi` | Root HTTP server, health route, and versioned API mounting |
+| `internal/httpapi/v1` | Version 1 routes and handlers |
+| `frontend` | Embedded one-page HTML, CSS, and vanilla JavaScript UI |
 | `cmd/route-cli` | CLI executable |
-| `cmd/route-server` | Reserved server executable directory |
+| `cmd/route-server` | HTTP server process entry point |
 | `internal/deprecated/traffic` | Preserved WIP OSRM geometry, NYC DOT matching, and EMA overlay experiment |
 
 Dependency rule: `optimizer` imports no application, transport, filesystem, or
@@ -58,15 +62,126 @@ The project is currently a working, demonstrable route-order calculator:
 - `top_k` defaults to `5` and is configurable per request;
 - the optimizer, planner, external adapters, storage, and CLI are separated and
   covered by tests; and
-- the same `planner.Service` is ready to be called by an HTTP transport.
+- the same `planner.Service` is ready to be called by the versioned HTTP API.
 
-The HTTP server and frontend are intentionally not implemented yet. There is
-also no database, authentication, background worker, or job queue. The next
-active milestone is implementing `GET /healthz` and `POST /v1/optimize` in
-`internal/httpapi`, then wiring them from `cmd/route-server`.
+The HTTP server now starts from `cmd/route-server`, and `GET /healthz` is
+implemented. The root `internal/httpapi.Server` mounts a separate
+`internal/httpapi/v1.Server` under `/v1`. `GET /v1/config` publishes the
+configured planner limits. `POST /v1/optimize` accepts resolved stops and
+`top_k`; the planner obtains an OSRM matrix through the shared cached provider
+and returns ranked routes as JSON. `POST /v1/geocode` resolves a list of address
+rows and returns a success or error for every row so a frontend can highlight
+only the failures. Both CLI and HTTP use the same cached providers.
+The API does not write complete request/result artifacts, but its provider
+caches do persist resolved names, coordinates, and matrices as private local
+files. The root page is a working dependency-free frontend. There is no
+database, authentication, background worker, job queue, or cache-size quota.
 
 The traffic experiment is preserved separately, but it is not part of the
 current calculator or server milestone.
+
+## Frontend
+
+The root `frontend/` package contains one page with no npm packages or build
+step:
+
+```text
+frontend/
+  embed.go
+  index.html
+  styles.css
+  app.js
+```
+
+The Go server embeds these files and serves them at `/`, so browser API calls
+remain same-origin and require no CORS configuration. The page keeps the whole
+workflow visible at once:
+
+1. Add address rows with optional labels/notes. The first row is the depot.
+2. Resolve the entire batch with `POST /v1/geocode`; row errors remain inline.
+3. Choose `top_k` and call `POST /v1/optimize` after every row resolves.
+4. Review ranked round trips and open one in Google Maps.
+
+The page reads `GET /v1/config` on startup, so its stop count and `top_k`
+controls follow the active YAML configuration rather than assuming defaults.
+
+The built-in NYC demo uses one depot and three delivery stops so its directions
+links fit Google Maps' documented mobile-browser limit of three intermediate
+waypoints. Larger calculations still work, but mobile Maps links may omit extra
+waypoints; the page displays this constraint next to the Maps notice.
+
+Run it and open `http://localhost:8080`:
+
+```bash
+go run ./cmd/route-server -addr :8080 -config config.example.yaml
+```
+
+The server also honors Replit's `PORT` environment variable when `-addr` is not
+specified. Use an Autoscale or Reserved VM deployment because the application
+requires its Go API, rather than a Static deployment. Replit documents that a
+published app's filesystem is not persistent, so the disk cache is a warm-run
+optimization there and may reset on republish. See
+[Replit deployment troubleshooting](https://docs.replit.com/build/troubleshooting).
+
+## Provider Caches
+
+CLI and server geocoding and OSRM requests use the same persistent cache
+behavior. Successful geocodes default to 90 days, while complete matrices
+default to 30 days. The longer geocode TTL is appropriate for fixed delivery
+addresses. Both are configurable in `config.example.yaml` (start the server
+with `-config config.example.yaml` to load that file):
+
+```yaml
+cache:
+  enabled: true
+  directory: data/cache
+  geocode_ttl_hours: 2160
+  matrix_ttl_hours: 720
+```
+
+Every entry is an atomic, versioned JSON file:
+
+```text
+data/cache/geocode/<sha256>.json
+data/cache/matrices/<sha256>.json
+```
+
+Geocode keys include the Nominatim endpoint/query contract and a normalized
+address. Case and repeated whitespace do not cause duplicate calls. Only
+successful results are cached; invalid addresses and provider errors are not.
+
+Matrix keys include the OSRM endpoint/profile and ordered stop coordinates at
+the precision sent to OSRM. Stop names, IDs, and `top_k` do not affect the key.
+Reordering or changing any coordinate causes a cache miss.
+
+Concurrent same-key requests inside one process are combined so only one call
+reaches the provider. Cache read/write failures are warnings and fall back to
+the provider. Once an entry expires, the provider is tried first; if it is
+unavailable, the expired entry is used so a previously warmed demo still runs.
+Cache JSON files are written with owner-only (`0600`) permissions.
+
+The old `data/geocode_cache.json` and `data/matrix_cache.json` formats are
+legacy and are not read by active code because they lack provider/schema/expiry
+metadata. Cache files are derived data and may be deleted safely; subsequent
+requests rebuild them.
+
+The default public Nominatim adapter is process-wide rate limited and serialized
+to at most one provider request per second; cache hits do not wait. The UI must
+submit geocoding only as an explicit action, not as type-ahead autocomplete,
+and must display OpenStreetMap attribution. Do not send confidential or personal
+addresses to the public service. Review the
+[official Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/)
+before publishing the server; a production deployment should normally use a
+self-hosted or contracted provider and add authentication plus storage quotas.
+
+The default public OSRM table endpoint uses HTTPS. Matrix cache misses and
+expired-entry refreshes share a process-wide serialized limiter that starts at
+most one public OSRM request per second. A complete matrix needs one table
+request, concurrent misses for the same matrix are still combined, and fresh
+cache hits do not wait. Custom or self-hosted OSRM endpoints are not paced by
+this public-demo limiter. Review the
+[OSRM demo server policy](https://github.com/Project-OSRM/osrm-backend/wiki/Demo-server)
+before publishing against the shared endpoint.
 
 ## Preserved Traffic Experiment
 
@@ -222,13 +337,54 @@ See `internal/cli/cli.go` for the complete flag dispatch and dependency wiring.
 
 ## Planner API
 
-The server handler should construct a `planner.OptimizeRequest` with either:
+Internally, `planner.Service` accepts either:
 
 - resolved `Stops`, plus an optional caller-supplied duration matrix; or
 - `Addresses`, allowing the planner to use its geocoder and matrix provider.
 
-If no matrix is supplied, the configured provider builds one. `OptimizeResult`
-contains ranked paths, ordered stops, durations, matrix source, and Maps URLs.
+If no matrix is supplied, the configured provider builds one. The public
+`POST /v1/optimize` endpoint deliberately accepts only resolved stops and
+`top_k`, keeping the matrix as a backend implementation detail.
+
+Geocode request:
+
+```json
+{
+  "addresses": [
+    "Times Square, New York, NY",
+    "an invalid address"
+  ]
+}
+```
+
+`POST /v1/geocode` returns HTTP `200` for a processed batch even when individual
+rows fail. Each result retains its zero-based input index:
+
+```json
+{
+  "results": [
+    {
+      "index": 0,
+      "address": "Times Square, New York, NY",
+      "stop": {
+        "id": "stop-0",
+        "name": "Times Square, New York",
+        "lon": -73.986,
+        "lat": 40.757
+      }
+    },
+    {
+      "index": 1,
+      "address": "an invalid address",
+      "error": "no geocode result"
+    }
+  ]
+}
+```
+
+Malformed JSON and unknown fields return `400`. Missing or oversized address
+batches return `422`. Blank strings are row-level errors so the frontend can
+highlight their exact positions.
 
 Suggested HTTP request:
 
@@ -238,8 +394,7 @@ Suggested HTTP request:
     {"id": "depot", "name": "Warehouse", "lat": 40.75, "lon": -73.98},
     {"id": "a", "name": "Customer A", "lat": 40.72, "lon": -74.00}
   ],
-  "top_k": 5,
-  "duration_matrix_seconds": [[0, 300], [360, 0]]
+  "top_k": 5
 }
 ```
 
@@ -247,26 +402,29 @@ Suggested response fields already exist on `planner.OptimizeResult`:
 
 ```json
 {
-  "matrix_source": "provided",
+  "matrix_source": "provider",
   "top_k": 5,
   "routes": [
     {
       "rank": 1,
       "path": [0, 1, 0],
       "duration_seconds": 660,
-      "directions_url": "https://www.google.com/maps/dir/?..."
+      "directions_url": "https://www.google.com/maps/dir/?api=1..."
     }
   ]
 }
 ```
 
-## Server Exercise
+## HTTP Server
 
-Implement these first:
+Current route status:
 
 ```text
-GET  /healthz
-POST /v1/optimize
+GET  /               embedded one-page frontend
+GET  /healthz       process health
+GET  /v1/config     planner defaults and request limits
+POST /v1/geocode    resolve address rows with per-row results
+POST /v1/optimize   build a cached matrix and rank resolved stops
 ```
 
 The handler should only decode JSON, perform HTTP-level validation, call

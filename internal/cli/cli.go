@@ -7,13 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
-	"time"
 
+	"route-optimizer-go/internal/app"
 	"route-optimizer-go/internal/config"
-	"route-optimizer-go/internal/geocode"
 	"route-optimizer-go/internal/maps"
-	"route-optimizer-go/internal/matrix"
 	"route-optimizer-go/internal/optimizer"
 	"route-optimizer-go/internal/planner"
 	"route-optimizer-go/internal/storage"
@@ -217,7 +216,7 @@ func runGeocode(args []string) error {
 	if err != nil {
 		return err
 	}
-	client := geocode.NewNominatim(firstNonEmpty(*baseURL, cfg.Providers.NominatimBaseURL), cfg.HTTP.UserAgent, time.Duration(cfg.HTTP.GeocodeTimeoutSec)*time.Second)
+	client := app.NewGeocoder(cfg, firstNonEmpty(*baseURL, cfg.Providers.NominatimBaseURL), log.Printf)
 	stops := make([]optimizer.Stop, len(addresses))
 	for index, address := range addresses {
 		stop, err := client.Geocode(context.Background(), address)
@@ -254,7 +253,7 @@ func runMatrix(args []string) error {
 	if err := storage.ReadJSON(*stopsPath, &stops); err != nil {
 		return err
 	}
-	provider := matrix.NewOSRM(firstNonEmpty(*baseURL, cfg.Providers.OSRMBaseURL), cfg.HTTP.UserAgent, time.Duration(cfg.HTTP.MatrixTimeoutSec)*time.Second)
+	provider := app.NewMatrixProvider(cfg, firstNonEmpty(*baseURL, cfg.Providers.OSRMBaseURL), log.Printf)
 	durations, err := provider.Durations(context.Background(), stops)
 	if err != nil {
 		return err
@@ -368,12 +367,10 @@ func buildItinerary(result planner.OptimizeResult, rank int) (planner.OptimizeRe
 
 func buildService(cfg config.Config, nominatimBaseURL, osrmBaseURL string) planner.Service {
 	return planner.Service{
-		Solver: optimizer.NewSolver(cfg.Planner.MaxStops, cfg.Planner.MaxTopK),
-		Geocoder: geocode.NewNominatim(nominatimBaseURL, cfg.HTTP.UserAgent,
-			time.Duration(cfg.HTTP.GeocodeTimeoutSec)*time.Second),
-		MatrixProvider: matrix.NewOSRM(osrmBaseURL, cfg.HTTP.UserAgent,
-			time.Duration(cfg.HTTP.MatrixTimeoutSec)*time.Second),
-		DefaultTopK: cfg.Planner.DefaultTopK,
+		Solver:         optimizer.NewSolver(cfg.Planner.MaxStops, cfg.Planner.MaxTopK),
+		Geocoder:       app.NewGeocoder(cfg, nominatimBaseURL, log.Printf),
+		MatrixProvider: app.NewMatrixProvider(cfg, osrmBaseURL, log.Printf),
+		DefaultTopK:    cfg.Planner.DefaultTopK,
 	}
 }
 

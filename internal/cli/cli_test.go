@@ -144,6 +144,58 @@ func TestAllRunsThroughPlannerAndAdapters(t *testing.T) {
 	}
 }
 
+func TestGeocodeReusesPersistentCacheAcrossRuns(t *testing.T) {
+	directory := t.TempDir()
+	addressesPath := filepath.Join(directory, "addresses.txt")
+	if err := os.WriteFile(addressesPath, []byte("Times Square\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := 0
+	geocodeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`[{"display_name":"Times Square, New York","lat":"40.757","lon":"-73.986"}]`))
+	}))
+	defer geocodeServer.Close()
+
+	configPath := filepath.Join(directory, "config.yaml")
+	configBody := fmt.Sprintf(`
+planner:
+  default_top_k: 5
+  max_top_k: 10
+  max_stops: 10
+providers:
+  nominatim_base_url: %q
+  osrm_base_url: "http://unused-osrm"
+cache:
+  enabled: true
+  directory: %q
+  geocode_ttl_hours: 2160
+  matrix_ttl_hours: 720
+http:
+  geocode_timeout_sec: 2
+  matrix_timeout_sec: 2
+  user_agent: "cli-test"
+output:
+  duration_unit: minutes
+`, geocodeServer.URL, filepath.Join(directory, "cache"))
+	if err := os.WriteFile(configPath, []byte(configBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for run := 0; run < 2; run++ {
+		outPath := filepath.Join(directory, fmt.Sprintf("stops-%d.json", run))
+		captureStdout(t, func() {
+			if err := RunArgs([]string{"geocode", "-config", configPath, "-addresses", addressesPath, "-out", outPath}); err != nil {
+				t.Fatalf("RunArgs: %v", err)
+			}
+		})
+	}
+	if requests != 1 {
+		t.Fatalf("Nominatim requests = %d, want 1", requests)
+	}
+}
+
 func TestRunArgsRejectsUnknownCommand(t *testing.T) {
 	err := RunArgs([]string{"traffic"})
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {
@@ -168,6 +220,8 @@ planner:
 providers:
   nominatim_base_url: %q
   osrm_base_url: %q
+cache:
+  enabled: false
 http:
   geocode_timeout_sec: 2
   matrix_timeout_sec: 2

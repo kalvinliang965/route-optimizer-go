@@ -1,5 +1,5 @@
-// Package storage contains CLI-oriented file persistence. Server request
-// handling should normally stay stateless and avoid these helpers.
+// Package storage contains atomic local-file persistence used by CLI artifacts
+// and provider caches. HTTP handlers do not access it directly.
 package storage
 
 import (
@@ -20,7 +20,7 @@ func ReadJSON(path string, destination interface{}) error {
 	return nil
 }
 
-// WriteJSON atomically replaces path with indented JSON.
+// WriteJSON atomically replaces path with owner-readable indented JSON.
 func WriteJSON(path string, value interface{}) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -42,7 +42,7 @@ func WriteJSON(path string, value interface{}) error {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := temporary.Chmod(0644); err != nil {
+	if err := temporary.Chmod(0600); err != nil {
 		return err
 	}
 	if _, err := temporary.Write(data); err != nil {
