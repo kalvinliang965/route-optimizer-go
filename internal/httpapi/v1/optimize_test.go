@@ -90,6 +90,37 @@ func TestOptimizeSuccess(t *testing.T) {
 	}
 }
 
+func TestOptimizeAcceptsZeroAndBoundaryCoordinates(t *testing.T) {
+	fake := &fakeRouteOptimizer{result: planner.OptimizeResult{TopK: 1}}
+	server, err := NewServer(fake, &fakeAddressGeocoder{}, testLimits(10))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/optimize", strings.NewReader(`{
+		"stops":[
+			{"id":"depot","name":" Equator ","lat":0,"lon":0},
+			{"id":"edge","name":"Boundary","lat":90,"lon":-180}
+		],
+		"top_k":1
+	}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.calls != 1 || len(fake.request.Stops) != 2 {
+		t.Fatalf("optimizer calls = %d, request = %#v", fake.calls, fake.request)
+	}
+	if got := fake.request.Stops[0]; got.Name != "Equator" || got.Lat != 0 || got.Lon != 0 {
+		t.Fatalf("zero-coordinate stop = %#v", got)
+	}
+	if got := fake.request.Stops[1]; got.Lat != 90 || got.Lon != -180 {
+		t.Fatalf("boundary-coordinate stop = %#v", got)
+	}
+}
+
 func TestOptimizeRejectsWrongMethod(t *testing.T) {
 	fake := &fakeRouteOptimizer{}
 	server, err := NewServer(fake, &fakeAddressGeocoder{}, testLimits(10))

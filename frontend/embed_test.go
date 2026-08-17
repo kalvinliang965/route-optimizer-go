@@ -13,7 +13,7 @@ func TestHandlerServesFrontendAssets(t *testing.T) {
 		contentType string
 		contains    string
 	}{
-		{path: "/", contentType: "text/html", contains: "Route Optimizer"},
+		{path: "/", contentType: "text/html", contains: "How to use it:"},
 		{path: "/styles.css", contentType: "text/css", contains: "--color-ink"},
 		{path: "/app.js", contentType: "text/javascript", contains: "resolveAddresses"},
 	}

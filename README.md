@@ -97,10 +97,15 @@ The Go server embeds these files and serves them at `/`, so browser API calls
 remain same-origin and require no CORS configuration. The page keeps the whole
 workflow visible at once:
 
-1. Add address rows with optional labels/notes. The first row is the depot.
-2. Resolve the entire batch with `POST /v1/geocode`; row errors remain inline.
-3. Choose `top_k` and call `POST /v1/optimize` after every row resolves.
-4. Review ranked round trips and open one in Google Maps.
+1. Choose **Address** or **Coordinates** on each row. The first row is the
+   depot, and labels/notes remain optional.
+2. Resolve the batch. Only Address rows are sent to `POST /v1/geocode`; row
+   errors remain inline.
+3. Each successful address automatically becomes a Coordinates row populated
+   with the provider's real latitude and longitude. Those values can be edited
+   directly, or the row can be changed back to Address and resolved again.
+4. Choose `top_k` and call `POST /v1/optimize` after every row is ready.
+5. Review ranked round trips and open one in Google Maps.
 
 The page reads `GET /v1/config` on startup, so its stop count and `top_k`
 controls follow the active YAML configuration rather than assuming defaults.
@@ -149,10 +154,14 @@ data/cache/matrices/<sha256>.json
 Geocode keys include the Nominatim endpoint/query contract and a normalized
 address. Case and repeated whitespace do not cause duplicate calls. Only
 successful results are cached; invalid addresses and provider errors are not.
+Coordinates entered directly bypass Nominatim and the geocode cache entirely.
+They do not require an address; the optional label or generated Depot/Stop name
+identifies them. Coordinates are still sent to the configured routing provider.
 
 Matrix keys include the OSRM endpoint/profile and ordered stop coordinates at
 the precision sent to OSRM. Stop names, IDs, and `top_k` do not affect the key.
-Reordering or changing any coordinate causes a cache miss.
+Reordering or changing any coordinate causes a cache miss. Directly entered or
+edited coordinates therefore use the matrix cache normally.
 
 Concurrent same-key requests inside one process are combined so only one call
 reaches the provider. Cache read/write failures are warnings and fall back to

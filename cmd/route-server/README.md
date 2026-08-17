@@ -43,7 +43,10 @@ curl -i \
 
 The page at `/` provides the complete address → geocode → optimize → Google
 Maps workflow. It uses one batch resolve button, shows provider errors on their
-exact rows, and keeps labels/notes separate from geocoder input. There is no
+exact rows, and keeps labels/notes separate from geocoder input. Every row can
+accept either an address or coordinates directly. Successful address lookups
+become editable coordinate fields; directly entered coordinates bypass
+geocoding but still use the routing provider and matrix cache. There is no
 frontend installation or build step.
 
 `/healthz` returns `200 OK`. `GET /v1/config` publishes the configured default

@@ -9,32 +9,28 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header class="site-header">
-    <a class="brand" href="/" aria-label="Route Optimizer home">
-      <span class="brand-mark" aria-hidden="true">
-        <span></span><span></span><span></span>
-      </span>
-      <span>Route Optimizer</span>
-    </a>
-    <div id="server-status" class="server-status" role="status" aria-live="polite">
-      <span class="status-dot" aria-hidden="true"></span>
-      <span data-status-label>Checking server</span>
-    </div>
-  </header>
-
   <main class="page-shell">
-    <section class="hero" aria-labelledby="page-title">
-      <p class="eyebrow">Small-batch route planning</p>
-      <h1 id="page-title">Turn a stop list into a clear delivery order.</h1>
-      <p class="hero-copy">
-        Resolve each address, review the exact locations, then calculate the
-        best round trips. The first stop is always your depot.
-      </p>
-      <div class="hero-facts" aria-label="Planner summary">
-        <span id="max-stops-fact">Up to 10 stops</span>
-        <span id="default-top-k-fact">Top 5 by default</span>
-        <span>Returns to depot</span>
+    <section class="instructions" aria-labelledby="page-title">
+      <div class="instructions-heading">
+        <div>
+          <h1 id="page-title">Route optimizer</h1>
+          <p>How to use it:</p>
+        </div>
+        <div id="server-status" class="server-status" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span data-status-label>Checking server</span>
+        </div>
       </div>
+      <ol>
+        <li>Add each stop as an address or exact coordinates.</li>
+        <li>Resolve the locations and review the coordinates.</li>
+        <li>Calculate the routes. Stop 1 is always the start and finish.</li>
+      </ol>
+      <p class="planner-limits">
+        <span id="max-stops-fact">Up to 10 stops</span>
+        <span aria-hidden="true">·</span>
+        <span id="default-top-k-fact">Top 5 by default</span>
+      </p>
     </section>
 
     <section class="workspace-card" aria-labelledby="stops-heading">
@@ -43,7 +39,7 @@
         <div>
           <p class="section-kicker">Prepare locations</p>
           <h2 id="stops-heading">Stops</h2>
-          <p>Add an address and an optional label. Resolve the whole batch when it is ready.</p>
+          <p>Enter an address or coordinates directly. Resolved addresses become editable coordinates.</p>
         </div>
       </div>
 
@@ -60,10 +56,10 @@
       <div class="primary-action-row">
         <div>
           <p class="action-title">Ready to check the addresses?</p>
-          <p class="action-help">Errors stay attached to their rows so you can correct them in place.</p>
+          <p class="action-help">Address rows use lookup; coordinate rows are checked locally.</p>
         </div>
         <button id="resolve-addresses" class="button button-primary" type="button">
-          Resolve all addresses
+          Resolve locations
         </button>
       </div>
       <p id="geocode-message" class="form-message" role="status" aria-live="polite"></p>
@@ -75,7 +71,7 @@
         <div>
           <p class="section-kicker">Calculate order</p>
           <h2 id="optimize-heading">Optimize the route</h2>
-          <p>Every address must resolve before route calculation begins.</p>
+          <p>Each row needs a resolved address or valid coordinates.</p>
         </div>
       </div>
 
@@ -119,6 +115,7 @@
     <p>
       Geocoding © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>.
       Do not submit confidential or personal addresses to the public demo provider.
+      Coordinates entered directly skip geocoding but are still sent to the routing provider.
     </p>
     <p>
       Google Maps opens only after you select a calculated route. Mobile browsers support
@@ -130,20 +127,35 @@
     <article class="stop-row" role="listitem">
       <div class="stop-row-heading">
         <div class="stop-identity">
-          <span class="stop-index" data-role="index"></span>
           <div>
             <strong data-role="kind"></strong>
             <span data-role="kind-help"></span>
           </div>
         </div>
-        <button class="remove-stop" type="button" data-action="remove">Remove</button>
+        <div class="stop-row-actions">
+          <select class="input-mode" data-field="input-mode">
+            <option value="address">Address</option>
+            <option value="coordinates">Coordinates</option>
+          </select>
+          <button class="remove-stop" type="button" data-action="remove">Remove</button>
+        </div>
       </div>
 
       <div class="stop-fields">
-        <label class="field address-field">
+        <label class="field address-field" data-role="address-fields">
           <span>Address</span>
           <input type="text" data-field="address" autocomplete="street-address" placeholder="350 5th Avenue, New York, NY">
         </label>
+        <div class="coordinate-fields" data-role="coordinate-fields" hidden>
+          <label class="field">
+            <span>Latitude</span>
+            <input type="number" data-field="latitude" min="-90" max="90" step="any" inputmode="decimal" placeholder="40.75273">
+          </label>
+          <label class="field">
+            <span>Longitude</span>
+            <input type="number" data-field="longitude" min="-180" max="180" step="any" inputmode="decimal" placeholder="-73.97723">
+          </label>
+        </div>
         <label class="field label-field">
           <span>Label / note <small>optional</small></span>
           <input type="text" data-field="label" maxlength="80" placeholder="Warehouse, Customer A…">
@@ -154,7 +166,7 @@
         <span class="resolution-dot" aria-hidden="true"></span>
         <div>
           <strong data-role="resolution-title">Waiting to resolve</strong>
-          <span data-role="resolution-detail">Enter an address, then resolve the batch.</span>
+          <span data-role="resolution-detail">Choose an address or coordinates.</span>
         </div>
       </div>
     </article>

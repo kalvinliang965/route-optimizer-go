@@ -57,7 +57,12 @@ function createRow(address = "", label = "") {
     key: `row-${state.nextRowKey++}`,
     address,
     label,
+    inputMode: "address",
+    latitude: "",
+    longitude: "",
+    coordinateSource: "entered",
     resolvedKey: "",
+    lookupStop: null,
     stop: null,
     error: ""
   };
@@ -68,7 +73,104 @@ function addressKey(address) {
 }
 
 function isRowResolved(row) {
+  if (row.inputMode === "coordinates") {
+    const coordinates = parseCoordinates(row);
+    return Boolean(coordinates && row.stop)
+      && row.stop.lat === coordinates.lat
+      && row.stop.lon === coordinates.lon;
+  }
   return Boolean(row.stop) && row.resolvedKey === addressKey(row.address);
+}
+
+function parseCoordinates(row) {
+  const latitudeText = String(row.latitude).trim();
+  const longitudeText = String(row.longitude).trim();
+  if (!latitudeText || !longitudeText) {
+    return null;
+  }
+
+  const lat = Number(latitudeText);
+  const lon = Number(longitudeText);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90
+    || !Number.isFinite(lon) || lon < -180 || lon > 180) {
+    return null;
+  }
+  return { lat, lon };
+}
+
+function coordinateError(row) {
+  const latitudeText = String(row.latitude).trim();
+  const longitudeText = String(row.longitude).trim();
+  if (!latitudeText && !longitudeText) {
+    return "Enter latitude and longitude for this row.";
+  }
+  if (!latitudeText) {
+    return "Enter a latitude between -90 and 90.";
+  }
+  if (!longitudeText) {
+    return "Enter a longitude between -180 and 180.";
+  }
+
+  const lat = Number(latitudeText);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    return "Latitude must be a number between -90 and 90.";
+  }
+  const lon = Number(longitudeText);
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+    return "Longitude must be a number between -180 and 180.";
+  }
+  return "";
+}
+
+function effectiveStopName(row, index) {
+  const providerName = row.lookupStop && row.resolvedKey === addressKey(row.address)
+    ? row.lookupStop.name
+    : "";
+  return row.label.trim() || providerName || (index === 0 ? "Depot" : `Stop ${index + 1}`);
+}
+
+function syncCoordinateStop(row, index) {
+  const coordinates = parseCoordinates(row);
+  if (!coordinates) {
+    row.stop = null;
+    return false;
+  }
+  row.stop = {
+    id: `stop-${index}`,
+    name: effectiveStopName(row, index),
+    lat: coordinates.lat,
+    lon: coordinates.lon
+  };
+  return true;
+}
+
+function applyGeocodeResult(row, index, result) {
+  if (result && result.stop && isFiniteCoordinate(result.stop.lat, result.stop.lon)) {
+    const stop = {
+      id: `stop-${index}`,
+      name: String(result.stop.name || row.address.trim()),
+      lat: Number(result.stop.lat),
+      lon: Number(result.stop.lon)
+    };
+    row.lookupStop = stop;
+    row.stop = stop;
+    row.latitude = String(stop.lat);
+    row.longitude = String(stop.lon);
+    row.coordinateSource = "geocoded";
+    row.inputMode = "coordinates";
+    row.resolvedKey = addressKey(row.address);
+    row.error = "";
+    return true;
+  }
+
+  row.lookupStop = null;
+  row.stop = null;
+  row.latitude = "";
+  row.longitude = "";
+  row.coordinateSource = "entered";
+  row.resolvedKey = "";
+  row.error = result && result.error ? String(result.error) : "No location was returned.";
+  return false;
 }
 
 function invalidateRoutes() {
@@ -93,16 +195,25 @@ function renderRows() {
     const article = elements.stopTemplate.content.firstElementChild.cloneNode(true);
     article.dataset.rowKey = row.key;
 
-    const rowNumber = article.querySelector('[data-role="index"]');
     const kind = article.querySelector('[data-role="kind"]');
     const kindHelp = article.querySelector('[data-role="kind-help"]');
+    const inputMode = article.querySelector('[data-field="input-mode"]');
+    const addressFields = article.querySelector('[data-role="address-fields"]');
     const addressInput = article.querySelector('[data-field="address"]');
     const labelInput = article.querySelector('[data-field="label"]');
+    const coordinateFields = article.querySelector('[data-role="coordinate-fields"]');
+    const latitudeInput = article.querySelector('[data-field="latitude"]');
+    const longitudeInput = article.querySelector('[data-field="longitude"]');
     const removeButton = article.querySelector('[data-action="remove"]');
 
-    rowNumber.textContent = String(index + 1);
     kind.textContent = index === 0 ? "Depot" : `Stop ${index + 1}`;
     kindHelp.textContent = index === 0 ? "Start and finish" : "Delivery location";
+
+    inputMode.value = row.inputMode;
+    inputMode.disabled = Boolean(state.busy);
+    inputMode.setAttribute("aria-label", `Input type for ${kind.textContent}`);
+    addressFields.hidden = row.inputMode !== "address";
+    coordinateFields.hidden = row.inputMode !== "coordinates";
 
     addressInput.value = row.address;
     addressInput.disabled = Boolean(state.busy);
@@ -115,6 +226,16 @@ function renderRows() {
     labelInput.placeholder = index === 0 ? "Main warehouse" : "Customer name, purpose…";
     labelInput.setAttribute("aria-label", `Optional label for ${kind.textContent}`);
 
+    latitudeInput.value = row.latitude;
+    latitudeInput.disabled = Boolean(state.busy);
+    latitudeInput.id = `latitude-${row.key}`;
+    latitudeInput.setAttribute("aria-label", `Latitude for ${kind.textContent}`);
+
+    longitudeInput.value = row.longitude;
+    longitudeInput.disabled = Boolean(state.busy);
+    longitudeInput.id = `longitude-${row.key}`;
+    longitudeInput.setAttribute("aria-label", `Longitude for ${kind.textContent}`);
+
     removeButton.disabled = Boolean(state.busy) || state.rows.length <= 2;
     removeButton.setAttribute("aria-label", `Remove ${kind.textContent}`);
 
@@ -123,6 +244,10 @@ function renderRows() {
       row.address = event.currentTarget.value;
       if (addressKey(row.address) !== previousKey || row.resolvedKey !== addressKey(row.address)) {
         row.stop = null;
+        row.lookupStop = null;
+        row.latitude = "";
+        row.longitude = "";
+        row.coordinateSource = "entered";
         row.resolvedKey = "";
         row.error = "";
         invalidateRoutes();
@@ -133,9 +258,54 @@ function renderRows() {
 
     labelInput.addEventListener("input", (event) => {
       row.label = event.currentTarget.value;
+      if (row.inputMode === "coordinates" && row.coordinateSource === "entered") {
+        syncCoordinateStop(row, index);
+      }
       if (state.routes.length > 0) {
         renderRoutes();
       }
+    });
+
+    inputMode.addEventListener("change", (event) => {
+      const nextMode = event.currentTarget.value;
+      row.inputMode = nextMode === "coordinates" ? "coordinates" : "address";
+      row.error = "";
+      if (row.inputMode === "coordinates") {
+        const hasCoordinates = String(row.latitude).trim() || String(row.longitude).trim();
+        if (!hasCoordinates && row.lookupStop && isFiniteCoordinate(row.lookupStop.lat, row.lookupStop.lon)) {
+          row.latitude = String(row.lookupStop.lat);
+          row.longitude = String(row.lookupStop.lon);
+          row.coordinateSource = "geocoded";
+        }
+        syncCoordinateStop(row, index);
+      } else {
+        row.stop = null;
+      }
+      invalidateRoutes();
+      renderRows();
+
+      const field = row.inputMode === "coordinates"
+        ? elements.stopsList.querySelector(`[data-row-key="${row.key}"] [data-field="latitude"]`)
+        : elements.stopsList.querySelector(`[data-row-key="${row.key}"] [data-field="address"]`);
+      if (field) {
+        field.focus();
+      }
+    });
+
+    const updateCoordinate = (field, value) => {
+      row[field] = value;
+      row.coordinateSource = "entered";
+      row.error = "";
+      syncCoordinateStop(row, index);
+      invalidateRoutes();
+      updateRowResolution(article, row);
+      updateControls();
+    };
+    latitudeInput.addEventListener("input", (event) => {
+      updateCoordinate("latitude", event.currentTarget.value);
+    });
+    longitudeInput.addEventListener("input", (event) => {
+      updateCoordinate("longitude", event.currentTarget.value);
     });
 
     removeButton.addEventListener("click", () => {
@@ -148,7 +318,7 @@ function renderRows() {
       renderRows();
       setMessage(elements.geocodeMessage, `Removed stop ${currentIndex + 1}.`);
       const nextIndex = Math.min(currentIndex, state.rows.length - 1);
-      focusAddress(state.rows[nextIndex].key);
+      focusRowInput(state.rows[nextIndex]);
     });
 
     updateRowResolution(article, row);
@@ -162,6 +332,8 @@ function renderRows() {
 
 function updateRowResolution(article, row) {
   const addressInput = article.querySelector('[data-field="address"]');
+  const latitudeInput = article.querySelector('[data-field="latitude"]');
+  const longitudeInput = article.querySelector('[data-field="longitude"]');
   const title = article.querySelector('[data-role="resolution-title"]');
   const detail = article.querySelector('[data-role="resolution-detail"]');
   const status = article.querySelector('[data-role="resolution"]');
@@ -169,10 +341,12 @@ function updateRowResolution(article, row) {
 
   status.id = errorID;
   article.classList.remove("is-resolved", "has-error");
-  addressInput.removeAttribute("aria-invalid");
-  addressInput.removeAttribute("aria-describedby");
+  [addressInput, latitudeInput, longitudeInput].forEach((input) => {
+    input.removeAttribute("aria-invalid");
+    input.removeAttribute("aria-describedby");
+  });
 
-  if (state.busy === "geocode") {
+  if (row.inputMode === "address" && state.busy === "geocode") {
     title.textContent = "Resolving address";
     detail.textContent = "Cached locations return immediately; new locations may take longer.";
     return;
@@ -180,17 +354,43 @@ function updateRowResolution(article, row) {
 
   if (row.error) {
     article.classList.add("has-error");
-    addressInput.setAttribute("aria-invalid", "true");
-    addressInput.setAttribute("aria-describedby", errorID);
-    title.textContent = "Could not resolve this row";
+    const invalidInputs = [];
+    if (row.inputMode === "address") {
+      invalidInputs.push(addressInput);
+    }
+    if (row.inputMode === "coordinates") {
+      const lat = Number(String(row.latitude).trim());
+      const lon = Number(String(row.longitude).trim());
+      if (!String(row.latitude).trim() || !Number.isFinite(lat) || lat < -90 || lat > 90) {
+        invalidInputs.push(latitudeInput);
+      }
+      if (!String(row.longitude).trim() || !Number.isFinite(lon) || lon < -180 || lon > 180) {
+        invalidInputs.push(longitudeInput);
+      }
+    }
+    invalidInputs.forEach((input) => {
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", errorID);
+    });
+    title.textContent = row.inputMode === "coordinates"
+      ? "Coordinates need attention"
+      : "Could not resolve this address";
     detail.textContent = row.error;
     return;
   }
 
   if (isRowResolved(row)) {
     article.classList.add("is-resolved");
-    title.textContent = row.stop.name;
+    title.textContent = row.coordinateSource === "geocoded" && row.lookupStop
+      ? row.lookupStop.name
+      : "Coordinates ready";
     detail.textContent = `${formatCoordinate(row.stop.lat)}, ${formatCoordinate(row.stop.lon)}`;
+    return;
+  }
+
+  if (row.inputMode === "coordinates") {
+    title.textContent = "Coordinates required";
+    detail.textContent = coordinateError(row);
     return;
   }
 
@@ -212,7 +412,7 @@ function updateControls() {
   elements.loadDemo.disabled = busy;
   elements.resolve.disabled = busy || !stopCountValid;
   elements.resolve.classList.toggle("is-loading", state.busy === "geocode");
-  elements.resolve.textContent = state.busy === "geocode" ? "Resolving addresses…" : "Resolve all addresses";
+  elements.resolve.textContent = state.busy === "geocode" ? "Resolving locations…" : "Resolve locations";
 
   elements.topK.disabled = busy;
   elements.optimize.disabled = busy || !stopCountValid || !allResolved || !topKValid;
@@ -235,6 +435,36 @@ function focusAddress(rowKey) {
   });
 }
 
+function focusRowInput(row) {
+  window.requestAnimationFrame(() => {
+    const field = row.inputMode === "coordinates" ? "latitude" : "address";
+    const input = elements.stopsList.querySelector(
+      `[data-row-key="${row.key}"] [data-field="${field}"]`
+    );
+    if (input) {
+      input.focus();
+    }
+  });
+}
+
+function focusRowError(row) {
+  window.requestAnimationFrame(() => {
+    let field = "address";
+    if (row.inputMode === "coordinates") {
+      const lat = Number(String(row.latitude).trim());
+      const latitudeInvalid = !String(row.latitude).trim()
+        || !Number.isFinite(lat) || lat < -90 || lat > 90;
+      field = latitudeInvalid ? "latitude" : "longitude";
+    }
+    const input = elements.stopsList.querySelector(
+      `[data-row-key="${row.key}"] [data-field="${field}"]`
+    );
+    if (input) {
+      input.focus();
+    }
+  });
+}
+
 function addStop() {
   if (state.busy || state.rows.length >= limits.maxStops) {
     return;
@@ -251,7 +481,8 @@ function loadDemo() {
   if (state.busy) {
     return;
   }
-  const hasUserInput = state.rows.some((row) => row.address.trim() || row.label.trim());
+  const hasUserInput = state.rows.some((row) => row.address.trim() || row.label.trim()
+    || String(row.latitude).trim() || String(row.longitude).trim());
   if (hasUserInput && !window.confirm("Replace the current stop list with the NYC demo?")) {
     return;
   }
@@ -270,7 +501,8 @@ async function resolveAddresses() {
     return;
   }
 
-  const blankRows = state.rows.filter((row) => !row.address.trim());
+  state.rows.forEach((row) => { row.error = ""; });
+  const blankRows = state.rows.filter((row) => row.inputMode === "address" && !row.address.trim());
   if (blankRows.length > 0) {
     blankRows.forEach((row) => {
       row.error = "Enter an address for this row.";
@@ -285,59 +517,69 @@ async function resolveAddresses() {
     return;
   }
 
+  const lookupEntries = [];
+  state.rows.forEach((row, index) => {
+    if (row.inputMode === "coordinates") {
+      if (!syncCoordinateStop(row, index)) {
+        row.error = coordinateError(row);
+      }
+      return;
+    }
+    lookupEntries.push({ row, index });
+  });
+
   state.busy = "geocode";
-  state.rows.forEach((row) => { row.error = ""; });
-  setMessage(elements.geocodeMessage, "Resolving the stop list. New public-provider lookups are intentionally paced.");
+  const coordinateCount = state.rows.length - lookupEntries.length;
+  setMessage(
+    elements.geocodeMessage,
+    lookupEntries.length > 0
+      ? `Resolving ${lookupEntries.length} ${lookupEntries.length === 1 ? "address" : "addresses"}. ${coordinateCount > 0 ? `${coordinateCount} coordinate ${coordinateCount === 1 ? "row is" : "rows are"} already entered.` : "New public-provider lookups are intentionally paced."}`
+      : "Checking coordinates. No address lookup is needed."
+  );
   setMessage(elements.optimizeMessage);
   renderRows();
 
   try {
-    const payload = await requestJSON("/v1/geocode", {
-      addresses: state.rows.map((row) => row.address.trim())
-    });
-    if (!Array.isArray(payload.results) || payload.results.length !== state.rows.length) {
-      throw new Error("The server returned an incomplete geocode result.");
-    }
-
-    const resultsByIndex = new Map();
-    payload.results.forEach((result) => {
-      const index = result && result.index;
-      if (!Number.isInteger(index) || index < 0 || index >= state.rows.length || resultsByIndex.has(index)) {
-        throw new Error("The server returned invalid geocode row indexes.");
+    if (lookupEntries.length > 0) {
+      const payload = await requestJSON("/v1/geocode", {
+        addresses: lookupEntries.map(({ row }) => row.address.trim())
+      });
+      if (!Array.isArray(payload.results) || payload.results.length !== lookupEntries.length) {
+        throw new Error("The server returned an incomplete geocode result.");
       }
-      resultsByIndex.set(index, result);
-    });
-    if (resultsByIndex.size !== state.rows.length) {
-      throw new Error("The server did not return every geocode row.");
-    }
 
-    let failures = 0;
-    state.rows.forEach((row, index) => {
-      const result = resultsByIndex.get(index);
-      if (result && result.stop && isFiniteCoordinate(result.stop.lat, result.stop.lon)) {
-        row.stop = {
-          id: `stop-${index}`,
-          name: String(result.stop.name || row.address.trim()),
-          lat: Number(result.stop.lat),
-          lon: Number(result.stop.lon)
-        };
-        row.resolvedKey = addressKey(row.address);
-        row.error = "";
-      } else {
-        row.stop = null;
-        row.resolvedKey = "";
-        row.error = result && result.error ? String(result.error) : "No location was returned.";
-        failures += 1;
+      const resultsByIndex = new Map();
+      payload.results.forEach((result) => {
+        const index = result && result.index;
+        if (!Number.isInteger(index) || index < 0 || index >= lookupEntries.length || resultsByIndex.has(index)) {
+          throw new Error("The server returned invalid geocode row indexes.");
+        }
+        resultsByIndex.set(index, result);
+      });
+      if (resultsByIndex.size !== lookupEntries.length) {
+        throw new Error("The server did not return every geocode row.");
       }
-    });
+
+      lookupEntries.forEach(({ row, index }, lookupIndex) => {
+        const result = resultsByIndex.get(lookupIndex);
+        applyGeocodeResult(row, index, result);
+      });
+    }
 
     invalidateRoutes();
+    const failures = state.rows.filter((row) => !isRowResolved(row)).length;
     if (failures === 0) {
-      setMessage(elements.geocodeMessage, `Resolved all ${state.rows.length} stops.`, "success");
+      setMessage(
+        elements.geocodeMessage,
+        coordinateCount > 0
+          ? `All ${state.rows.length} stops are ready. ${coordinateCount} coordinate ${coordinateCount === 1 ? "row required" : "rows required"} no lookup.`
+          : `Resolved all ${state.rows.length} stops.`,
+        "success"
+      );
     } else {
       setMessage(
         elements.geocodeMessage,
-        `${failures} ${failures === 1 ? "row needs" : "rows need"} attention. Correct the highlighted addresses and resolve again.`,
+        `${failures} ${failures === 1 ? "row needs" : "rows need"} attention. Correct the highlighted values and try again.`,
         "error"
       );
     }
@@ -348,14 +590,14 @@ async function resolveAddresses() {
     renderRows();
     const firstError = state.rows.find((row) => row.error);
     if (firstError) {
-      focusAddress(firstError.key);
+      focusRowError(firstError);
     }
   }
 }
 
 async function optimizeRoutes() {
   if (state.busy || state.rows.length < 2 || !state.rows.every(isRowResolved)) {
-    setMessage(elements.optimizeMessage, "Resolve every address before calculating routes.", "error");
+    setMessage(elements.optimizeMessage, "Resolve each address or enter valid coordinates first.", "error");
     return;
   }
 
@@ -372,13 +614,16 @@ async function optimizeRoutes() {
   elements.routeResults.setAttribute("aria-busy", "true");
 
   try {
-    const payload = await requestJSON("/v1/optimize", {
-      stops: state.rows.map((row, index) => ({
+    const stops = state.rows.map((row, index) => (
+      {
         id: `stop-${index}`,
-        name: row.stop.name,
+        name: effectiveStopName(row, index),
         lat: row.stop.lat,
         lon: row.stop.lon
-      })),
+      }
+    ));
+    const payload = await requestJSON("/v1/optimize", {
+      stops,
       top_k: topK
     });
     if (!Array.isArray(payload.routes)) {
@@ -457,6 +702,7 @@ function buildRouteCard(route, routeIndex) {
   addresses.className = "route-addresses";
 
   const path = Array.isArray(route.path) ? route.path : [];
+  const orderedStops = Array.isArray(route.ordered_stops) ? route.ordered_stops : [];
   path.forEach((stopIndex, sequenceIndex) => {
     if (sequenceIndex > 0) {
       const arrow = document.createElement("span");
@@ -476,7 +722,10 @@ function buildRouteCard(route, routeIndex) {
     routeStops.append(routeStop);
 
     const address = document.createElement("li");
-    address.textContent = row && row.stop ? row.stop.name : label.textContent;
+    const orderedStop = orderedStops[sequenceIndex];
+    address.textContent = orderedStop && orderedStop.name
+      ? String(orderedStop.name)
+      : row && row.stop ? row.stop.name : label.textContent;
     addresses.append(address);
   });
 
