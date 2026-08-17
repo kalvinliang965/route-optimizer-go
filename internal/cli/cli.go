@@ -81,9 +81,9 @@ func isCommand(command string) bool {
 
 func printUsage(writer io.Writer) {
 	fmt.Fprint(writer, `Usage:
-  route-optimizer all [flags] [addresses-file]
-  route-optimizer <command> [flags]
-  route-optimizer help [command]
+  route-cli all [flags] [addresses-file]
+  route-cli <command> [flags]
+  route-cli help [command]
 
 Commands:
   all        Geocode, build a matrix, and calculate top-K route orders
@@ -93,9 +93,9 @@ Commands:
   itinerary  Turn a ranked optimization result into a Maps itinerary
 
 Examples:
-  route-optimizer all -top-k 5 examples/addresses.txt
-  route-optimizer optimize -stops data/stops.json -matrix data/matrix.json -out data/optimization.json -top-k 5
-  route-optimizer itinerary -plan data/optimization.json -rank 1
+  route-cli all -top-k 5 examples/addresses.txt
+  route-cli optimize -stops data/stops.json -matrix data/matrix.json -out data/optimization.json -top-k 5
+  route-cli itinerary -plan data/optimization.json -rank 1
 `)
 }
 
@@ -103,7 +103,7 @@ func newFlagSet(name, invocation, summary string) *flag.FlagSet {
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	set.Usage = func() {
-		fmt.Fprintf(set.Output(), "Usage:\n  route-optimizer %s\n\n%s\n\nFlags:\n", invocation, summary)
+		fmt.Fprintf(set.Output(), "Usage:\n  route-cli %s\n\n%s\n\nFlags:\n", invocation, summary)
 		set.PrintDefaults()
 	}
 	return set

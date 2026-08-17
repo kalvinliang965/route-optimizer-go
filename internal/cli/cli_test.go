@@ -21,7 +21,7 @@ func TestRunArgsHelp(t *testing.T) {
 			t.Fatalf("RunArgs: %v", err)
 		}
 	})
-	for _, want := range []string{"route-optimizer all", "optimize", "-top-k 5"} {
+	for _, want := range []string{"route-cli all", "optimize", "-top-k 5"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help missing %q:\n%s", want, output)
 		}

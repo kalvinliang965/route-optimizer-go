@@ -9,6 +9,81 @@ The calculator chooses waypoint order from a directed duration matrix. Google
 Maps is only the executor: it receives the chosen order and handles navigation
 between consecutive stops.
 
+## Quick Start
+
+The first run needs internet access for Nominatim geocoding and the OSRM
+duration matrix. Later runs can reuse the provider cache under `data/cache`.
+
+### Run the web app and HTTP API
+
+Start the Go server from the repository root:
+
+```bash
+go run ./cmd/route-server -addr :8080 -config config.example.yaml
+```
+
+Keep that terminal running, then open <http://localhost:8080> in a browser. The
+same process serves both the one-page frontend and the `/v1` JSON API. Confirm
+the API from another terminal:
+
+```bash
+curl -i http://localhost:8080/healthz
+curl -sS http://localhost:8080/v1/config
+```
+
+Stop the server with `Ctrl+C`. On Replit, omit `-addr :8080` so the server uses
+the platform's `PORT` value:
+
+```bash
+go run ./cmd/route-server -config config.example.yaml
+```
+
+See [HTTP Server](#http-server) for complete `curl` examples.
+
+### Run the complete CLI workflow
+
+The `all` command is the one-command demo. It reads one address per line,
+geocodes every address, requests one OSRM matrix, calculates the top routes,
+and prints Google Maps links:
+
+```bash
+go run ./cmd/route-cli all \
+  -config config.example.yaml \
+  -addresses examples/addresses.txt \
+  -top-k 5
+```
+
+The first nonblank line in the address file is always the depot—the start and
+finish of every route. Blank lines are ignored. For example:
+
+```text
+Grand Central Terminal, New York, NY
+Times Square, New York, NY
+New York City Hall, New York, NY
+```
+
+In addition to printing the ranked routes, `all` writes these reusable files:
+
+```text
+data/stops.json
+data/matrix.json
+data/optimization.json
+```
+
+The address file may alternatively be positional. Put every flag before the
+filename when using this form:
+
+```bash
+go run ./cmd/route-cli all -config config.example.yaml -top-k 5 examples/addresses.txt
+```
+
+To see every available command or only the `all` flags:
+
+```bash
+go run ./cmd/route-cli --help
+go run ./cmd/route-cli help all
+```
+
 ## Architecture
 
 ```text
@@ -225,15 +300,32 @@ second CLI/application stack.
 
 ## CLI
 
-The CLI automatically falls back to `config.example.yaml` when `config.yaml`
-is absent.
+The CLI requires an explicit command. Running it without a command prints help;
+use `all` for the complete user-facing workflow. The CLI automatically falls
+back to `config.example.yaml` when `config.yaml` is absent, though explicitly
+selecting the example configuration makes demos reproducible.
 
 ```bash
 # Complete address -> matrix -> top-K workflow
-go run ./cmd/route-cli all -top-k 5 examples/addresses.txt
+go run ./cmd/route-cli all \
+  -config config.example.yaml \
+  -addresses examples/addresses.txt \
+  -top-k 5
+
+# Optional: run the same work as separate, inspectable stages
+go run ./cmd/route-cli geocode \
+  -config config.example.yaml \
+  -addresses examples/addresses.txt \
+  -out data/stops.json
+
+go run ./cmd/route-cli matrix \
+  -config config.example.yaml \
+  -stops data/stops.json \
+  -out data/matrix.json
 
 # Recalculate from existing JSON artifacts without external requests
 go run ./cmd/route-cli optimize \
+  -config config.example.yaml \
   -stops data/stops.json \
   -matrix data/matrix.json \
   -out data/optimization.json \
@@ -241,6 +333,7 @@ go run ./cmd/route-cli optimize \
 
 # Present the best route as a Google Maps itinerary
 go run ./cmd/route-cli itinerary \
+  -config config.example.yaml \
   -plan data/optimization.json \
   -rank 1
 
@@ -249,8 +342,15 @@ go run ./cmd/route-cli itinerary -plan data/optimization.json -rank 0
 
 # Help
 go run ./cmd/route-cli --help
+go run ./cmd/route-cli help all
 go run ./cmd/route-cli help optimize
 ```
+
+`all` accepts either `-addresses FILE` or one positional address file, but not
+both. Its output paths can be changed with `-stops-out`, `-matrix-out`, and
+`-plan-out`. Run `go run ./cmd/route-cli help all` for the complete flag list.
+The staged commands are mainly useful for debugging or replaying saved data;
+they are not required for a normal demo.
 
 `cmd/route-optimizer` remains as a compatibility alias while existing scripts
 move to `cmd/route-cli`.
@@ -425,6 +525,57 @@ Suggested response fields already exist on `planner.OptimizeResult`:
 ```
 
 ## HTTP Server
+
+Start the HTTP server locally and leave it running:
+
+```bash
+go run ./cmd/route-server -addr :8080 -config config.example.yaml
+```
+
+It serves the frontend at <http://localhost:8080>. The following requests can
+be run from a second terminal.
+
+Check the process and inspect its active limits:
+
+```bash
+curl -i http://localhost:8080/healthz
+curl -sS http://localhost:8080/v1/config
+```
+
+Resolve address rows. A processed batch returns HTTP `200` even when an
+individual row contains an `error`:
+
+```bash
+curl -sS -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "addresses": [
+      "Times Square, New York, NY",
+      "New York City Hall, New York, NY"
+    ]
+  }' \
+  http://localhost:8080/v1/geocode
+```
+
+Calculate routes from resolved or manually supplied coordinates. The first
+stop is the depot and is automatically placed at both ends of every result:
+
+```bash
+curl -sS -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "stops": [
+      {"id":"depot","name":"Warehouse","lat":40.7500,"lon":-73.9800},
+      {"id":"a","name":"Customer A","lat":40.7200,"lon":-74.0000}
+    ],
+    "top_k": 5
+  }' \
+  http://localhost:8080/v1/optimize
+```
+
+`POST /v1/geocode` and `POST /v1/optimize` are separate so clients can review
+or correct coordinates between the two operations. The browser UI performs
+this sequence for you.
 
 Current route status:
 
